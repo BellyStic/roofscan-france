@@ -20,8 +20,171 @@ function radiusBBox(lat,lon,r){const dLat=r/111320,dLon=r/(111320*Math.cos(lat*M
 function normalizeMaterial(v){if(!v)return 'Inconnu';const s=String(v).toLowerCase();if(s.includes('zinc'))return 'Zinc';if(s.includes('tuile'))return 'Tuile';if(s.includes('ardoise'))return 'Ardoise';if(s.includes('métal')||s.includes('metal'))return 'Métal';return v}
 function areaApprox(coords){let pts=[];function walk(x){if(Array.isArray(x)&&typeof x[0]==='number')pts.push(x);else if(Array.isArray(x))x.forEach(walk)}walk(coords);if(pts.length<3)return 0;let lat0=pts.reduce((a,p)=>a+p[1],0)/pts.length, kx=111320*Math.cos(lat0*Math.PI/180),ky=111320;let a=0;for(let i=0;i<pts.length;i++){let p=pts[i],q=pts[(i+1)%pts.length];a+=(p[0]*kx*q[1]*ky-q[0]*kx*p[1]*ky)}return Math.abs(a)/2}
 function featureArea(f){let g=f.geometry; if(!g)return 0;if(g.type==='Polygon')return areaApprox(g.coordinates[0]);if(g.type==='MultiPolygon')return g.coordinates.reduce((s,p)=>s+areaApprox(p[0]),0);return 0}
-async function scanZone(){if(!current){await searchAddress();if(!current)return}const r=+document.getElementById('radius').value||500;const min=+document.getElementById('minArea').value||0;const minH=+document.getElementById('minHeight').value||0;msg('Interrogation de la BD TOPO IGN…');layer.clearLayers();try{const b=radiusBBox(current.lat,current.lon,r);const u=new URL('https://data.geopf.fr/wfs/ows');u.searchParams.set('SERVICE','WFS');u.searchParams.set('REQUEST','GetFeature');u.searchParams.set('VERSION','2.0.0');u.searchParams.set('TYPENAME','BDTOPO_V3:batiment');u.searchParams.set('SRSNAME','CRS:84');u.searchParams.set('BBOX',b.join(',')+',CRS:84');u.searchParams.set('COUNT','1000');u.searchParams.set('outputFormat','application/json');const res=await fetch(u);if(!res.ok)throw Error('WFS '+res.status);const data=await res.json();let arr=data.features.map((f,i)=>{const p=f.properties||{};return {f,i,area:featureArea(f),height:+p.hauteur||0,material:normalizeMaterial(p.materiaux_de_la_toiture),usage:[p.usage_1,p.usage_2].filter(Boolean).join(' / ')||'Indifférencié',nature:p.nature||'Bâtiment',id:p.cleabs||f.id,lat:f.geometry?.coordinates?.[0]?.[0]?.[0]?.[0]?.[1]||current.lat,lon:f.geometry?.coordinates?.[0]?.[0]?.[0]?.[0]?.[0]||current.lon}});const sel=document.getElementById('material').value;const filtered=arr.filter(x=>x.area>=min&&x.height>=minH&&(sel==='all'||(sel==='zinc'&&x.material==='Zinc')||(sel==='tile'&&x.material==='Tuile')||(sel==='slate'&&x.material==='Ardoise')||(sel==='metal'&&x.material==='Métal')||(sel==='other'&&x.material==='Inconnu')));filtered.sort((a,b)=>b.area-a.area);document.getElementById('count').textContent=arr.length;document.getElementById('area').textContent=Math.round(arr.reduce((s,x)=>s+x.area,0)).toLocaleString('fr-FR')+' m²';document.getElementById('targeted').textContent=filtered.length;document.getElementById('known').textContent=(arr.length?Math.round(100*arr.filter(x=>x.material!=='Inconnu').length/arr.length):0)+'%';renderResults(filtered.slice(0,100));arr.forEach(x=>{if(x.area<min)return;L.geoJSON(x.f,{style:{color:x.material==='Zinc'?'#1476d4':'#6f8294',weight:1,fillOpacity:.28}}).bindPopup('<b>RoofScan</b><br>Surface emprise : '+Math.round(x.area)+' m²<br>Hauteur : '+(x.height||'—')+' m<br>Matériau IGN : '+x.material).addTo(layer)});msg(`${filtered.length} prospect(s) correspondant aux filtres.`)}catch(e){msg('Erreur lors du scan : '+e.message)}}
-function renderResults(items){const el=document.getElementById('results');if(!items.length){el.innerHTML='<div class="muted">Aucun bâtiment ne correspond aux filtres.</div>';return}el.innerHTML=items.map((x,n)=>`<div class="prospect"><div><b>#${n+1} — ${Math.round(x.area).toLocaleString('fr-FR')} m²</b><div><span class="pill good">${x.material}</span><span class="pill">${x.height?x.height+' m':'hauteur —'}</span><span class="pill">${x.usage}</span></div><div class="muted">${x.nature} · ${x.id}</div></div><button class="btn secondary" onclick="focusFeature(${n})">Voir</button></div>`).join('');window._items=items}
+async function scanZone(){
+  if(!current){
+    await searchAddress();
+    if(!current)return;
+  }
+
+  msg('Recherche du bâtiment correspondant à cette adresse…');
+  layer.clearLayers();
+
+  try{
+    const rayonRecherche=60;
+    const b=radiusBBox(current.lat,current.lon,rayonRecherche);
+
+    const u=new URL('https://data.geopf.fr/wfs/ows');
+    u.searchParams.set('SERVICE','WFS');
+    u.searchParams.set('REQUEST','GetFeature');
+    u.searchParams.set('VERSION','2.0.0');
+    u.searchParams.set('TYPENAME','BDTOPO_V3:batiment');
+    u.searchParams.set('SRSNAME','CRS:84');
+    u.searchParams.set('BBOX',b.join(',')+',CRS:84');
+    u.searchParams.set('COUNT','200');
+    u.searchParams.set('outputFormat','application/json');
+
+    const res=await fetch(u);
+    if(!res.ok)throw Error('WFS '+res.status);
+
+    const data=await res.json();
+
+    function pointDansAnneau(lon,lat,ring){
+      let dedans=false;
+      for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+        const xi=ring[i][0],yi=ring[i][1];
+        const xj=ring[j][0],yj=ring[j][1];
+        if(((yi>lat)!==(yj>lat)) &&
+           lon<(xj-xi)*(lat-yi)/(yj-yi)+xi){
+          dedans=!dedans;
+        }
+      }
+      return dedans;
+    }
+
+    function pointDansBatiment(lon,lat,g){
+      if(!g)return false;
+      if(g.type==='Polygon')
+        return pointDansAnneau(lon,lat,g.coordinates[0]);
+      if(g.type==='MultiPolygon')
+        return g.coordinates.some(p=>pointDansAnneau(lon,lat,p[0]));
+      return false;
+    }
+
+    function distanceSegment(lon,lat,a,b){
+      const kx=111320*Math.cos(lat*Math.PI/180);
+      const ky=111320;
+
+      const px=lon*kx,py=lat*ky;
+      const ax=a[0]*kx,ay=a[1]*ky;
+      const bx=b[0]*kx,by=b[1]*ky;
+
+      const dx=bx-ax,dy=by-ay;
+      const d=dx*dx+dy*dy;
+
+      const t=d
+        ? Math.max(0,Math.min(1,((px-ax)*dx+(py-ay)*dy)/d))
+        : 0;
+
+      return Math.hypot(
+        px-(ax+t*dx),
+        py-(ay+t*dy)
+      );
+    }
+
+    function distanceBatiment(lon,lat,g){
+      if(!g)return Infinity;
+      if(pointDansBatiment(lon,lat,g))return 0;
+
+      let rings=[];
+
+      if(g.type==='Polygon')
+        rings=[g.coordinates[0]];
+
+      if(g.type==='MultiPolygon')
+        rings=g.coordinates.map(p=>p[0]);
+
+      let min=Infinity;
+
+      rings.forEach(ring=>{
+        for(let i=1;i<ring.length;i++){
+          min=Math.min(
+            min,
+            distanceSegment(lon,lat,ring[i-1],ring[i])
+          );
+        }
+      });
+
+      return min;
+    }
+
+    const arr=data.features.map((f,i)=>{
+      const p=f.properties||{};
+
+      return{
+        f,
+        i,
+        area:featureArea(f),
+        height:+p.hauteur||0,
+        material:normalizeMaterial(p.materiaux_de_la_toiture),
+        usage:[p.usage_1,p.usage_2].filter(Boolean).join(' / ')||'Indifférencié',
+        nature:p.nature||'Bâtiment',
+        id:p.cleabs||f.id,
+        dedans:pointDansBatiment(current.lon,current.lat,f.geometry),
+        distance:distanceBatiment(current.lon,current.lat,f.geometry)
+      };
+    });
+
+    arr.sort((a,b)=>{
+      if(a.dedans&&!b.dedans)return -1;
+      if(!a.dedans&&b.dedans)return 1;
+      return a.distance-b.distance;
+    });
+
+    const x=arr[0];
+
+    if(!x || (!x.dedans && x.distance>60)){
+      document.getElementById('count').textContent='0';
+      document.getElementById('area').textContent='0 m²';
+      document.getElementById('targeted').textContent='0';
+      document.getElementById('known').textContent='0%';
+      document.getElementById('results').innerHTML=
+        '<div class="muted">Aucun bâtiment trouvé pour cette adresse.</div>';
+
+      msg('Aucun bâtiment correspondant trouvé.');
+      return;
+    }
+
+    document.getElementById('count').textContent='1';
+    document.getElementById('area').textContent=
+      Math.round(x.area).toLocaleString('fr-FR')+' m²';
+    document.getElementById('targeted').textContent='1';
+    document.getElementById('known').textContent=
+      x.material==='Inconnu'?'0%':'100%';
+
+    renderResults([x]);
+
+    const bat=L.geoJSON(x.f,{
+      style:{
+        color:'#1476d4',
+        weight:3,
+        fillOpacity:.30
+      }
+    }).bindPopup(
+      '<b>'+current.label+'</b>'+
+      '<br>Surface : '+Math.round(x.area)+' m²'+
+      '<br>Hauteur : '+(x.height||'—')+' m'+
+      '<br>Matériau : '+x.material
+    ).addTo(layer);
+
+    const bounds=bat.getBounds();
+    if(bounds.isValid())map.fitBounds(bounds.pad(.35));
+
+    msg('1 seul bâtiment identifié pour cette adresse.');
+
+  }catch(e){
+    msg('Erreur lors de l’analyse : '+e.message);
+  }
+}function renderResults(items){const el=document.getElementById('results');if(!items.length){el.innerHTML='<div class="muted">Aucun bâtiment ne correspond aux filtres.</div>';return}el.innerHTML=items.map((x,n)=>`<div class="prospect"><div><b>#${n+1} — ${Math.round(x.area).toLocaleString('fr-FR')} m²</b><div><span class="pill good">${x.material}</span><span class="pill">${x.height?x.height+' m':'hauteur —'}</span><span class="pill">${x.usage}</span></div><div class="muted">${x.nature} · ${x.id}</div></div><button class="btn secondary" onclick="focusFeature(${n})">Voir</button></div>`).join('');window._items=items}
 function focusFeature(n){const x=window._items?.[n];if(!x)return;const c=x.f.geometry.coordinates?.[0]?.[0]?.[0];if(c){map.setView([c[1],c[0]],19)}}
 function clearResults(){layer.clearLayers();document.getElementById('results').innerHTML='<div class="muted">Lance un scan.</div>';['count','area','targeted','known'].forEach((id,i)=>document.getElementById(id).textContent=i===1?'0 m²':'0')}
 async function installApp(){if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null}else msg('Dans Chrome : menu ⋮ → Ajouter à l’écran d’accueil / Installer l’application. Le site doit être publié en HTTPS.')}
