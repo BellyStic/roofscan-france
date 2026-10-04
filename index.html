@@ -29,7 +29,7 @@ async function scanZone(){
   layer.clearLayers();
 
   try{
-    const rayonRecherche=60;
+    const rayonRecherche=Math.max(100,Math.min(3000,+document.getElementById('radius').value||500));
     const b=radiusBBox(current.lat,current.lon,rayonRecherche);
 
     const u=new URL('https://data.geopf.fr/wfs/ows');
