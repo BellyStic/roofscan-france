@@ -1,4 +1,4 @@
-<!doctype html>
+2<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0b2b4c"><meta name="description" content="RoofScan France — analyse et prospection des toitures"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icons/icon-192.png"><link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"><title>RoofScan France</title><style>
 *{box-sizing:border-box}body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#f4f7fa;color:#10253a}header{background:#0b2b4c;color:#fff;padding:18px 16px 14px;position:sticky;top:0;z-index:1000}header .brand{font-weight:800;font-size:22px;letter-spacing:.2px}header small{opacity:.75}.wrap{max-width:1100px;margin:auto;padding:14px}.card{background:#fff;border:1px solid #dce5ed;border-radius:16px;padding:14px;margin-bottom:12px;box-shadow:0 3px 14px #0b2b4c0d}.search{display:flex;gap:8px}.search input{flex:1;padding:13px;border:1px solid #ccd8e2;border-radius:11px;font-size:16px}.btn{border:0;border-radius:11px;padding:12px 15px;font-weight:700;background:#1476d4;color:#fff;cursor:pointer}.btn.secondary{background:#eaf1f7;color:#17344d}.btn.dark{background:#0b2b4c}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stat{background:#f7fafc;border-radius:12px;padding:10px}.stat b{display:block;font-size:19px}.controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}.controls label{font-size:12px;font-weight:700}.controls input,.controls select{width:100%;margin-top:5px;padding:10px;border:1px solid #ccd8e2;border-radius:9px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}#map{height:52vh;min-height:360px;border-radius:14px;overflow:hidden}.status{padding:10px;border-radius:10px;background:#edf6ff;color:#15558a;font-size:13px}.results{display:grid;gap:8px}.prospect{border:1px solid #dce5ed;border-radius:12px;padding:12px;display:flex;justify-content:space-between;gap:10px}.pill{display:inline-block;border-radius:99px;padding:4px 8px;background:#eef4f8;font-size:11px;margin:2px}.good{background:#e7f7ee;color:#17663b}.warn{background:#fff4df;color:#805900}.muted{color:#65788a;font-size:12px}footer{padding:20px 14px;color:#6b7d8d;font-size:12px;text-align:center}@media(max-width:700px){.grid{grid-template-columns:1fr 1fr}.controls{grid-template-columns:1fr 1fr}.search{flex-direction:column}.search .btn{width:100%}}
 </style></head><body><header><div class="brand">🏠 RoofScan France</div><small>Analyse & prospection des toitures</small></header><main class="wrap">
@@ -158,8 +158,7 @@ async function scanZone(){
       Math.round(x.area).toLocaleString('fr-FR')+' m²';
     document.getElementById('targeted').textContent='1';
     document.getElementById('known').textContent=
-      x.material==='Inconnu'?'0%':'100%';
-
+      x.material==='Non confirmé'?'0%':'100%'
     renderResults([x]);
 
     const bat=L.geoJSON(x.f,{
