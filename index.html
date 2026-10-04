@@ -39,7 +39,7 @@ async function scanZone(){
     u.searchParams.set('TYPENAME','BDTOPO_V3:batiment');
     u.searchParams.set('SRSNAME','CRS:84');
     u.searchParams.set('BBOX',b.join(',')+',CRS:84');
-    u.searchParams.set('COUNT','200');
+    u.searchParams.set('COUNT','2000');
     u.searchParams.set('outputFormat','application/json');
 
     const res=await fetch(u);
