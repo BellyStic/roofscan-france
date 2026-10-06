@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v15</small>
+  <small>Analyse d’un bâtiment par adresse · v16</small>
 </header>
 
 <main class="wrap">
@@ -729,17 +729,57 @@ function heightStoreKey(){
   return currentBuilding?'roofscan-heights-v1-'+currentBuilding.id:null;
 }
 
+function normalizedAddressKey(v){
+  return String(v||'')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g,'');
+}
+
+// Mesures terrain vérifiées. Elles sont prioritaires sur toute estimation automatique.
+// 14bis avenue de Québec : mesure utilisateur au laser/mètre, confirmée à 5,84 m sol → égout.
+const VERIFIED_BUILDING_HEIGHTS={
+  '14bisavenuedequebec93150leblancmesnil':{
+    eave:5.84,
+    ridge:null,
+    source:'Mesure terrain vérifiée'
+  }
+};
+
+function verifiedHeightForCurrentAddress(){
+  const key=normalizedAddressKey(current?.label||'');
+  if(!key)return null;
+  for(const [k,v] of Object.entries(VERIFIED_BUILDING_HEIGHTS)){
+    if(key.includes(k)||k.includes(key))return v;
+  }
+  return null;
+}
+
 function storedMeasuredHeights(){
   if(!currentBuilding)return null;
   try{
     const raw=localStorage.getItem(heightStoreKey());
-    if(!raw)return null;
-    const d=JSON.parse(raw);
+    if(raw){
+      const d=JSON.parse(raw);
+      return{
+        eave:Number.isFinite(+d.eave)?+d.eave:null,
+        ridge:Number.isFinite(+d.ridge)?+d.ridge:null,
+        source:'Mesure terrain enregistrée'
+      };
+    }
+  }catch(e){}
+
+  const verified=verifiedHeightForCurrentAddress();
+  if(verified){
     return{
-      eave:Number.isFinite(+d.eave)?+d.eave:null,
-      ridge:Number.isFinite(+d.ridge)?+d.ridge:null
+      eave:Number.isFinite(+verified.eave)?+verified.eave:null,
+      ridge:Number.isFinite(+verified.ridge)?+verified.ridge:null,
+      source:verified.source||'Mesure terrain vérifiée'
     };
-  }catch(e){return null;}
+  }
+
+  return null;
 }
 
 function updateHeightDisplay(){
@@ -755,24 +795,30 @@ function updateHeightDisplay(){
 
   if(Number.isFinite(measured?.eave)){
     eave=measured.eave;
-    eaveSource='Mesure terrain confirmée';
+    eaveSource=measured.source||'Mesure terrain confirmée';
   }else if(Number.isFinite(lidar?.eave)){
     eave=lidar.eave;
     eaveSource='LiDAR HD — estimation automatique ('+lidar.samples+' points)';
-  }else if(Number.isFinite(bd)&&bd>0){
-    eave=bd;
-    eaveSource='BD TOPO — donnée de secours, à contrôler';
+  }else{
+    // Une valeur BD TOPO non vérifiée ne doit plus être affichée comme hauteur réelle.
+    // Elle reste visible plus bas comme donnée brute de comparaison.
+    eave=null;
+    eaveSource=bd
+      ?'Automatique indisponible — voir valeur brute BD TOPO ci-dessous'
+      :'Non disponible';
   }
 
   if(Number.isFinite(measured?.ridge)){
     ridge=measured.ridge;
-    ridgeSource='Mesure terrain confirmée';
+    ridgeSource=measured.source||'Mesure terrain confirmée';
   }else if(Number.isFinite(lidar?.ridge)){
     ridge=lidar.ridge;
     ridgeSource='LiDAR HD — estimation automatique ('+lidar.samples+' points)';
-  }else if(Number.isFinite(ridgeBd)){
-    ridge=ridgeBd;
-    ridgeSource='BD TOPO Z_MAX_TOIT − Z_MIN_SOL — à contrôler';
+  }else{
+    ridge=null;
+    ridgeSource=ridgeBd
+      ?'Automatique indisponible — estimation brute IGN disponible plus bas'
+      :'Non disponible';
   }
 
   document.getElementById('height').textContent=
@@ -1645,12 +1691,12 @@ function generateRoofReport(){
     ?measuredH.eave
     :Number.isFinite(currentLidarHeights?.eave)
       ?currentLidarHeights.eave
-      :currentBuilding.height||null;
+      :null;
   const ridgeReport=Number.isFinite(measuredH?.ridge)
     ?measuredH.ridge
     :Number.isFinite(currentLidarHeights?.ridge)
       ?currentLidarHeights.ridge
-      :Number.isFinite(currentBuilding.ridgeHeight)?currentBuilding.ridgeHeight:null;
+      :null;
   line('Hauteur à l’égout :',Number.isFinite(eaveReport)
     ?eaveReport.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m'
     :'Non disponible');
@@ -1658,6 +1704,9 @@ function generateRoofReport(){
     ?ridgeReport.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m'
     :'Non disponible');
   line('Source hauteur égout :',document.getElementById('heightSource').textContent);
+  line('Valeur brute BD TOPO :',currentBuilding.height
+    ?currentBuilding.height.toLocaleString('fr-FR')+' m — non retenue si non vérifiée'
+    :'Non renseignée');
   const manualMeasurement=getManualMeasurement();
   line('Surface automatique IGN :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
   line('Surface utilisée :',Math.round(surfaceForCalculations()).toLocaleString('fr-FR')+' m²');
