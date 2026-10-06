@@ -42,12 +42,26 @@
     .visualHead{display:flex;justify-content:space-between;gap:10px;align-items:center}
     .confidence{font-size:12px;font-weight:800;color:#15558a}
     #roofPreview{display:none;width:100%;max-height:300px;object-fit:contain;margin-top:10px;border-radius:10px;background:#dde8f1}
+    .workBox{margin-top:12px;padding:14px;border-radius:12px;background:#f8fafc;border:1px solid #dce5ed}
+    .workBox h3{margin:0 0 4px;font-size:16px}
+    .formGrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+    .field label{display:block;font-size:12px;color:#65788a;margin-bottom:5px}
+    .field input,.field select,.field textarea{width:100%;padding:10px;border:1px solid #cbd7e2;border-radius:9px;background:#fff;color:#10253a;font:inherit}
+    .field textarea{min-height:92px;resize:vertical}
+    .readonly{background:#eef3f7!important;font-weight:700}
+    .checkGrid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px;margin-top:8px}
+    .checkItem{display:flex;align-items:center;gap:7px;padding:8px 9px;border:1px solid #dde5ec;border-radius:9px;background:#fff;font-size:13px}
+    .checkItem input{width:auto}
+    .workActions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+    .saveState{font-size:12px;color:#527088;align-self:center}
     .hidden{display:none}
     footer{padding:18px 14px 28px;color:#6b7d8d;font-size:11px;text-align:center}
     @media(max-width:700px){
       .search{flex-direction:column}
       .search .btn{width:100%}
       .grid{grid-template-columns:1fr 1fr}
+      .formGrid{grid-template-columns:1fr}
+      .checkGrid{grid-template-columns:1fr}
       #map{height:46vh;min-height:340px}
     }
   </style>
@@ -55,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v10</small>
+  <small>Analyse d’un bâtiment par adresse · v11</small>
 </header>
 
 <main class="wrap">
@@ -104,7 +118,7 @@
 
     <div class="materialBox">
       <strong>Vérification manuelle du matériau</strong>
-      <div class="muted">La base foncière peut être fausse ou ancienne. Confirme le matériau seulement si la photo aérienne ou le terrain permet de l’identifier clairement.</div>
+      <div class="muted">Confirme le matériau seulement si la photo aérienne ou le terrain permet de l’identifier clairement.</div>
       <div class="materialActions" id="materialActions">
         <button class="miniBtn" onclick="setMaterialOverride('Zinc')">Zinc</button>
         <button class="miniBtn" onclick="setMaterialOverride('Tuiles')">Tuiles</button>
@@ -114,14 +128,74 @@
         <button class="miniBtn" onclick="clearMaterialOverride()">Annuler correction</button>
       </div>
     </div>
+
+    <div class="workBox">
+      <h3>Préparation chantier</h3>
+      <div class="muted">Les informations saisies ici sont enregistrées pour ce bâtiment.</div>
+
+      <div class="formGrid">
+        <div class="field">
+          <label for="roofPitchDeg">Pente moyenne (degrés)</label>
+          <input id="roofPitchDeg" type="number" inputmode="decimal" min="0" max="80" step="0.5" placeholder="Ex. 35">
+        </div>
+        <div class="field">
+          <label for="roofPitchPct">Pente équivalente (%)</label>
+          <input id="roofPitchPct" type="number" inputmode="decimal" min="0" max="567" step="1" placeholder="Calcul automatique">
+        </div>
+        <div class="field">
+          <label for="realRoofArea">Surface réelle estimée</label>
+          <input id="realRoofArea" class="readonly" type="text" value="—" readonly>
+        </div>
+        <div class="field">
+          <label for="roofType">Type de toiture</label>
+          <select id="roofType">
+            <option value="">À confirmer</option>
+            <option>Toit-terrasse</option>
+            <option>1 pan</option>
+            <option>2 pans</option>
+            <option>4 pans</option>
+            <option>Mansarde</option>
+            <option>Shed</option>
+            <option>Complexe / autre</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:12px">
+        <label>Éléments présents sur la toiture</label>
+        <div class="checkGrid" id="roofElements">
+          <label class="checkItem"><input type="checkbox" value="Cheminée"> Cheminée</label>
+          <label class="checkItem"><input type="checkbox" value="Fenêtre de toit / Velux"> Fenêtre de toit / Velux</label>
+          <label class="checkItem"><input type="checkbox" value="Verrière"> Verrière</label>
+          <label class="checkItem"><input type="checkbox" value="Lanterneau / Skydome"> Lanterneau / Skydome</label>
+          <label class="checkItem"><input type="checkbox" value="Noue"> Noue</label>
+          <label class="checkItem"><input type="checkbox" value="Arêtier"> Arêtier</label>
+          <label class="checkItem"><input type="checkbox" value="Gouttière / chéneau"> Gouttière / chéneau</label>
+          <label class="checkItem"><input type="checkbox" value="Panneaux solaires"> Panneaux solaires</label>
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:12px">
+        <label for="siteNotes">Notes chantier</label>
+        <textarea id="siteNotes" placeholder="Accès, état du toit, réparations à prévoir, mesures, remarques…"></textarea>
+      </div>
+
+      <div class="workActions">
+        <button class="btn" type="button" onclick="generateRoofReport()">Générer le rapport PDF</button>
+        <span class="saveState" id="saveState">—</span>
+      </div>
+
+      <div class="hint">La surface réelle est une estimation calculée avec la pente moyenne saisie : surface projetée ÷ cos(pente). Pour une toiture complexe avec plusieurs pentes, une mesure détaillée reste nécessaire.</div>
+    </div>
   </section>
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Le matériau affiché provient uniquement de l’analyse visuelle IGN ou d’une confirmation manuelle.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les surfaces inclinées sont des estimations calculées à partir de la pente renseignée.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 const map=L.map('map').setView([48.8566,2.3522],16);
 
@@ -198,7 +272,7 @@ function clearMaterialOverride(){
     localStorage.removeItem('roofscan-material-v2-'+currentBuilding.id);
   }catch(e){}
   updateMaterialDisplay();
-  msg('Correction locale supprimée. La donnée foncière est de nouveau affichée.');
+  msg('Correction manuelle supprimée. RoofScan revient à l’analyse visuelle.');
 }
 
 function msg(t){
@@ -806,6 +880,277 @@ function cleanUsage(p){
   return [...new Set(vals)].join(' / ')||'Non renseigné';
 }
 
+
+function siteDataKey(){
+  return currentBuilding?'roofscan-site-v1-'+currentBuilding.id:null;
+}
+
+function getCheckedElements(){
+  return [...document.querySelectorAll('#roofElements input[type="checkbox"]:checked')]
+    .map(x=>x.value);
+}
+
+function setCheckedElements(values){
+  const set=new Set(Array.isArray(values)?values:[]);
+  document.querySelectorAll('#roofElements input[type="checkbox"]').forEach(x=>{
+    x.checked=set.has(x.value);
+  });
+}
+
+function calculateRealRoofArea(){
+  const degEl=document.getElementById('roofPitchDeg');
+  const pctEl=document.getElementById('roofPitchPct');
+  const out=document.getElementById('realRoofArea');
+
+  if(!currentBuilding){
+    out.value='—';
+    return null;
+  }
+
+  const deg=parseFloat(String(degEl.value).replace(',','.'));
+  if(!Number.isFinite(deg)||deg<0||deg>=89){
+    out.value='—';
+    return null;
+  }
+
+  const pct=Math.tan(deg*Math.PI/180)*100;
+  pctEl.value=Number.isFinite(pct)?Math.round(pct*10)/10:'';
+
+  const real=currentBuilding.area/Math.cos(deg*Math.PI/180);
+  out.value=Math.round(real).toLocaleString('fr-FR')+' m²';
+  return real;
+}
+
+function calculateFromPercent(){
+  const pctEl=document.getElementById('roofPitchPct');
+  const degEl=document.getElementById('roofPitchDeg');
+  const pct=parseFloat(String(pctEl.value).replace(',','.'));
+
+  if(!Number.isFinite(pct)||pct<0){
+    degEl.value='';
+    document.getElementById('realRoofArea').value='—';
+    saveSiteData();
+    return;
+  }
+
+  const deg=Math.atan(pct/100)*180/Math.PI;
+  degEl.value=Math.round(deg*10)/10;
+
+  const real=currentBuilding
+    ? currentBuilding.area/Math.cos(deg*Math.PI/180)
+    : null;
+
+  document.getElementById('realRoofArea').value=
+    real?Math.round(real).toLocaleString('fr-FR')+' m²':'—';
+
+  saveSiteData();
+}
+
+function saveSiteData(){
+  if(!currentBuilding)return;
+
+  const deg=parseFloat(String(document.getElementById('roofPitchDeg').value).replace(',','.'));
+  const data={
+    pitchDeg:Number.isFinite(deg)?deg:null,
+    roofType:document.getElementById('roofType').value||'',
+    elements:getCheckedElements(),
+    notes:document.getElementById('siteNotes').value||'',
+    updatedAt:new Date().toISOString()
+  };
+
+  try{
+    localStorage.setItem(siteDataKey(),JSON.stringify(data));
+    document.getElementById('saveState').textContent='Enregistré pour ce bâtiment';
+  }catch(e){
+    document.getElementById('saveState').textContent='Enregistrement local impossible';
+  }
+}
+
+function loadSiteData(){
+  document.getElementById('roofPitchDeg').value='';
+  document.getElementById('roofPitchPct').value='';
+  document.getElementById('realRoofArea').value='—';
+  document.getElementById('roofType').value='';
+  document.getElementById('siteNotes').value='';
+  setCheckedElements([]);
+  document.getElementById('saveState').textContent='Aucune donnée chantier enregistrée';
+
+  if(!currentBuilding)return;
+
+  try{
+    const raw=localStorage.getItem(siteDataKey());
+    if(!raw)return;
+
+    const data=JSON.parse(raw);
+    if(Number.isFinite(+data.pitchDeg)){
+      document.getElementById('roofPitchDeg').value=+data.pitchDeg;
+      calculateRealRoofArea();
+    }
+    document.getElementById('roofType').value=data.roofType||'';
+    document.getElementById('siteNotes').value=data.notes||'';
+    setCheckedElements(data.elements||[]);
+    document.getElementById('saveState').textContent='Données chantier restaurées';
+  }catch(e){
+    document.getElementById('saveState').textContent='Données chantier illisibles';
+  }
+}
+
+function currentMaterialForReport(){
+  const override=storedMaterialOverride();
+  if(override?.value)return{
+    value:override.value,
+    source:'Confirmation manuelle'
+  };
+
+  if(currentVisualResult?.accepted&&currentVisualResult.material){
+    return{
+      value:currentVisualResult.material,
+      source:'Analyse visuelle IGN ('+Math.round(currentVisualResult.confidence*100)+' %)'
+    };
+  }
+
+  return{
+    value:'À confirmer',
+    source:'Analyse visuelle insuffisante'
+  };
+}
+
+function safeFileName(v){
+  return String(v||'rapport')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'')
+    .replace(/[^a-zA-Z0-9_-]+/g,'-')
+    .replace(/^-+|-+$/g,'')
+    .slice(0,80)||'rapport';
+}
+
+function generateRoofReport(){
+  if(!currentBuilding||!current){
+    msg('Recherche d’abord une adresse avant de générer le rapport.');
+    return;
+  }
+
+  saveSiteData();
+
+  const material=currentMaterialForReport();
+  const pitchDeg=parseFloat(String(document.getElementById('roofPitchDeg').value).replace(',','.'));
+  const pitchPct=parseFloat(String(document.getElementById('roofPitchPct').value).replace(',','.'));
+  const realArea=calculateRealRoofArea();
+  const roofType=document.getElementById('roofType').value||'À confirmer';
+  const elements=getCheckedElements();
+  const notes=document.getElementById('siteNotes').value.trim()||'Aucune note.';
+  const visualConf=currentVisualResult
+    ? Math.round((currentVisualResult.confidence||0)*100)+' %'
+    : 'Non disponible';
+
+  if(!window.jspdf?.jsPDF){
+    window.print();
+    msg('Le module PDF n’a pas chargé : la boîte d’impression a été ouverte.');
+    return;
+  }
+
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({unit:'mm',format:'a4'});
+  const pageW=210;
+  const left=15;
+  const right=195;
+  let y=16;
+
+  const line=(label,value)=>{
+    doc.setFont('helvetica','bold');
+    doc.text(label,left,y);
+    doc.setFont('helvetica','normal');
+    const parts=doc.splitTextToSize(String(value),122);
+    doc.text(parts,73,y);
+    y+=Math.max(6,parts.length*5);
+    if(y>278){
+      doc.addPage();
+      y=16;
+    }
+  };
+
+  doc.setFont('helvetica','bold');
+  doc.setFontSize(18);
+  doc.text('RoofScan France',left,y);
+  y+=8;
+  doc.setFontSize(12);
+  doc.text('Fiche chantier toiture',left,y);
+  y+=8;
+  doc.setDrawColor(190);
+  doc.line(left,y,right,y);
+  y+=8;
+
+  doc.setFontSize(10);
+  line('Adresse :',current.label);
+  line('Date :',new Date().toLocaleString('fr-FR'));
+  line('Identifiant IGN :',currentBuilding.id);
+  line('Hauteur IGN :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
+  line('Surface projetée :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
+  line('Pente moyenne :',Number.isFinite(pitchDeg)
+    ? pitchDeg.toLocaleString('fr-FR')+'°'+(Number.isFinite(pitchPct)?' / '+pitchPct.toLocaleString('fr-FR')+' %':'')
+    :'Non renseignée');
+  line('Surface réelle estimée :',realArea?Math.round(realArea).toLocaleString('fr-FR')+' m²':'Non calculée');
+  line('Matériau :',material.value);
+  line('Source matériau :',material.source);
+  line('Confiance analyse visuelle :',visualConf);
+  line('Type de toiture :',roofType);
+  line('Éléments présents :',elements.length?elements.join(', '):'Aucun élément renseigné');
+
+  y+=3;
+  doc.setFont('helvetica','bold');
+  doc.text('Notes chantier',left,y);
+  y+=6;
+  doc.setFont('helvetica','normal');
+  const noteLines=doc.splitTextToSize(notes,180);
+  doc.text(noteLines,left,y);
+  y+=noteLines.length*5+6;
+
+  const preview=document.getElementById('roofPreview');
+  if(preview.src&&preview.src.startsWith('data:image')&&y<245){
+    try{
+      doc.setFont('helvetica','bold');
+      doc.text('Extrait toiture analysé (IGN)',left,y);
+      y+=4;
+      const maxW=180,maxH=65;
+      const ratio=(preview.naturalWidth||1)/(preview.naturalHeight||1);
+      let w=maxW,h=w/ratio;
+      if(h>maxH){h=maxH;w=h*ratio;}
+      doc.addImage(preview.src,'JPEG',left,y,w,h);
+      y+=h+5;
+    }catch(e){}
+  }
+
+  doc.setFontSize(8);
+  doc.setTextColor(90);
+  doc.text(
+    'Surface réelle estimée = surface projetée / cos(pente moyenne). Une toiture complexe doit être mesurée par pans.',
+    left,288,{maxWidth:180}
+  );
+
+  const filename='RoofScan-'+safeFileName(current.label)+'.pdf';
+  doc.save(filename);
+  msg('Rapport PDF généré pour ce bâtiment.');
+}
+
+function bindSiteInputs(){
+  const deg=document.getElementById('roofPitchDeg');
+  const pct=document.getElementById('roofPitchPct');
+
+  deg.addEventListener('input',()=>{
+    calculateRealRoofArea();
+    saveSiteData();
+  });
+
+  pct.addEventListener('input',calculateFromPercent);
+  document.getElementById('roofType').addEventListener('change',saveSiteData);
+  document.getElementById('siteNotes').addEventListener('input',saveSiteData);
+  document.querySelectorAll('#roofElements input[type="checkbox"]').forEach(x=>{
+    x.addEventListener('change',saveSiteData);
+  });
+}
+
+bindSiteInputs();
+
 function resetBuilding(){
   layer.clearLayers();
   currentBuilding=null;
@@ -818,6 +1163,13 @@ function resetBuilding(){
   const preview=document.getElementById('roofPreview');
   preview.style.display='none';
   preview.removeAttribute('src');
+  document.getElementById('roofPitchDeg').value='';
+  document.getElementById('roofPitchPct').value='';
+  document.getElementById('realRoofArea').value='—';
+  document.getElementById('roofType').value='';
+  document.getElementById('siteNotes').value='';
+  setCheckedElements([]);
+  document.getElementById('saveState').textContent='—';
 }
 
 async function searchAddress(){
@@ -962,6 +1314,7 @@ async function analyzeBuilding(){
     document.getElementById('matchQuality').textContent=quality;
     document.getElementById('buildingId').textContent=x.id;
     updateMaterialDisplay();
+    loadSiteData();
 
     document.getElementById('matchInfo').textContent=
       x.dedans
