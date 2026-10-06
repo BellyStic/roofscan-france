@@ -75,13 +75,13 @@
     <div class="grid">
       <div class="stat"><span>Surface toiture projetée*</span><b id="area">—</b></div>
       <div class="stat"><span>Hauteur IGN</span><b id="height">—</b></div>
-      <div class="stat"><span>Matériau toiture</span><b id="material">—</b></div>
+      <div class="stat"><span>Matériau toiture</span><b id="material">À confirmer</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
     </div>
 
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
-      <div class="detail"><span>Donnée foncière toiture</span><strong id="materialSource">—</strong></div>
+      <div class="detail"><span>Indication foncière (non garantie)</span><strong id="materialSource">—</strong></div>
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
@@ -90,7 +90,7 @@
 
     <div class="materialBox">
       <strong>Vérification visuelle du matériau</strong>
-      <div class="muted">La donnée foncière peut être ancienne ou erronée. Si la photo aérienne ou le terrain confirme le matériau, tu peux le corriger ici.</div>
+      <div class="muted">La base foncière peut être fausse ou ancienne. Confirme le matériau seulement si la photo aérienne ou le terrain permet de l’identifier clairement.</div>
       <div class="materialActions" id="materialActions">
         <button class="miniBtn" onclick="setMaterialOverride('Zinc')">Zinc</button>
         <button class="miniBtn" onclick="setMaterialOverride('Tuiles')">Tuiles</button>
@@ -104,7 +104,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan n’invente pas une pente de toiture lorsqu’elle n’est pas fournie par la donnée source.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Le matériau issu des fichiers fonciers est une indication non garantie : RoofScan ne l’affiche pas comme certain sans confirmation.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -132,23 +132,12 @@ let layer=L.layerGroup().addTo(map);
 let current=null;
 let currentBuilding=null;
 
-const VERIFIED_MATERIALS={
-  '40ruemariesorindefresne94400vitrysurseine':'Zinc'
-};
-
-function materialKey(){
-  return normalizeText(current?.label||'');
-}
-
 function storedMaterialOverride(){
   if(!currentBuilding)return null;
 
-  const known=VERIFIED_MATERIALS[materialKey()];
-  if(known)return{value:known,source:'Correction vérifiée'};
-
   try{
     const value=localStorage.getItem('roofscan-material-'+currentBuilding.id);
-    return value?{value,source:'Correction utilisateur'}:null;
+    return value?{value,source:'Matériau confirmé'}:null;
   }catch(e){
     return null;
   }
@@ -158,16 +147,14 @@ function updateMaterialDisplay(){
   if(!currentBuilding)return;
 
   const override=storedMaterialOverride();
-  const value=override?.value||currentBuilding.material;
+  const displayed=override?.value||'À confirmer visuellement';
 
-  document.getElementById('material').textContent=value;
+  document.getElementById('material').textContent=displayed;
   document.getElementById('materialSource').textContent=
-    override
-      ? override.source+' — source foncière : '+currentBuilding.material
-      : currentBuilding.material+' — fichier foncier, à confirmer visuellement';
+    currentBuilding.material+' — donnée foncière non garantie';
 
   document.querySelectorAll('#materialActions .miniBtn').forEach(btn=>{
-    btn.classList.toggle('active',btn.textContent.trim()===value);
+    btn.classList.toggle('active',override&&btn.textContent.trim()===override.value);
   });
 }
 
