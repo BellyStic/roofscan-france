@@ -55,7 +55,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse</small>
+  <small>Analyse d’un bâtiment par adresse · v10</small>
 </header>
 
 <main class="wrap">
@@ -86,7 +86,7 @@
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
       <div class="detail"><span>Analyse visuelle IGN</span><strong id="visualMaterial">En attente…</strong></div>
-      <div class="detail"><span>Donnée foncière</span><strong id="materialSource">Non utilisée pour décider du matériau</strong></div>
+      <div class="detail"><span>Source du matériau affiché</span><strong id="materialDecisionSource">À confirmer</strong></div>
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
@@ -118,7 +118,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan privilégie l’analyse visuelle de l’orthophoto et n’utilise la donnée foncière que comme indication secondaire non garantie.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Le matériau affiché provient uniquement de l’analyse visuelle IGN ou d’une confirmation manuelle.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -152,7 +152,7 @@ function storedMaterialOverride(){
   if(!currentBuilding)return null;
 
   try{
-    const value=localStorage.getItem('roofscan-material-'+currentBuilding.id);
+    const value=localStorage.getItem('roofscan-material-v2-'+currentBuilding.id);
     return value?{value,source:'Matériau confirmé'}:null;
   }catch(e){
     return null;
@@ -168,11 +168,15 @@ function updateMaterialDisplay(){
     currentVisualResult.material;
 
   const displayed=override?.value ||
-    (autoAccepted?currentVisualResult.material:'À confirmer visuellement');
+    (autoAccepted?currentVisualResult.material:'À confirmer');
 
   document.getElementById('material').textContent=displayed;
-  document.getElementById('materialSource').textContent=
-    'Non utilisée pour décider du matériau';
+  document.getElementById('materialDecisionSource').textContent=
+    override
+      ? 'Confirmation manuelle'
+      : autoAccepted
+        ? 'Analyse visuelle IGN'
+        : 'Aucune conclusion assez fiable';
 
   document.querySelectorAll('#materialActions .miniBtn').forEach(btn=>{
     btn.classList.toggle('active',override&&btn.textContent.trim()===override.value);
@@ -182,7 +186,7 @@ function updateMaterialDisplay(){
 function setMaterialOverride(value){
   if(!currentBuilding)return;
   try{
-    localStorage.setItem('roofscan-material-'+currentBuilding.id,value);
+    localStorage.setItem('roofscan-material-v2-'+currentBuilding.id,value);
   }catch(e){}
   updateMaterialDisplay();
   msg('Matériau corrigé en « '+value+' » pour ce bâtiment.');
@@ -191,7 +195,7 @@ function setMaterialOverride(value){
 function clearMaterialOverride(){
   if(!currentBuilding)return;
   try{
-    localStorage.removeItem('roofscan-material-'+currentBuilding.id);
+    localStorage.removeItem('roofscan-material-v2-'+currentBuilding.id);
   }catch(e){}
   updateMaterialDisplay();
   msg('Correction locale supprimée. La donnée foncière est de nouveau affichée.');
@@ -984,7 +988,9 @@ document.getElementById('address').addEventListener('keydown',e=>{
 });
 
 if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+  navigator.serviceWorker.register('./sw.js').then(reg=>{
+    reg.update().catch(()=>{});
+  }).catch(()=>{});
 }
 </script>
 </body>
