@@ -86,7 +86,7 @@
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
       <div class="detail"><span>Analyse visuelle IGN</span><strong id="visualMaterial">En attente…</strong></div>
-      <div class="detail"><span>Indication foncière (non garantie)</span><strong id="materialSource">—</strong></div>
+      <div class="detail"><span>Donnée foncière</span><strong id="materialSource">Non utilisée pour décider du matériau</strong></div>
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
@@ -172,7 +172,7 @@ function updateMaterialDisplay(){
 
   document.getElementById('material').textContent=displayed;
   document.getElementById('materialSource').textContent=
-    currentBuilding.material+' — donnée foncière non garantie';
+    'Non utilisée pour décider du matériau';
 
   document.querySelectorAll('#materialActions .miniBtn').forEach(btn=>{
     btn.classList.toggle('active',override&&btn.textContent.trim()===override.value);
