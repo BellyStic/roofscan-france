@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v14</small>
+  <small>Analyse d’un bâtiment par adresse · v15</small>
 </header>
 
 <main class="wrap">
@@ -93,15 +93,17 @@
     <div class="grid">
       <div class="stat"><span>Surface automatique*</span><b id="area">—</b></div>
       <div class="stat"><span>Surface utilisée</span><b id="usedArea">—</b></div>
-      <div class="stat"><span>Hauteur à l’égout (IGN)</span><b id="height">—</b></div>
-      <div class="stat"><span>Hauteur au faîtage (IGN)</span><b id="ridgeHeight">—</b></div>
+      <div class="stat"><span>Hauteur à l’égout</span><b id="height">—</b></div>
+      <div class="stat"><span>Hauteur au faîtage</span><b id="ridgeHeight">—</b></div>
       <div class="stat"><span>Matériau toiture</span><b id="material">À confirmer</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
     </div>
 
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
+      <div class="detail"><span>Source hauteur à l’égout</span><strong id="heightSource">—</strong></div>
       <div class="detail"><span>Source hauteur faîtage</span><strong id="ridgeSource">—</strong></div>
+      <div class="detail"><span>Valeur brute BD TOPO</span><strong id="bdTopoHeight">—</strong></div>
       <div class="detail"><span>Donnée matériau BD TOPO</span><strong id="ignMaterial">—</strong></div>
       <div class="detail"><span>Analyse visuelle IGN</span><strong id="visualMaterial">En attente…</strong></div>
       <div class="detail"><span>Source du matériau affiché</span><strong id="materialDecisionSource">À confirmer</strong></div>
@@ -110,6 +112,25 @@
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
       <div class="detail"><span>Source de la surface</span><strong id="areaSource">Contour automatique IGN</strong></div>
       <div class="hint">* RoofScan calcule automatiquement la surface à partir du contour du bâtiment IGN. Tu peux la corriger manuellement uniquement si nécessaire.</div>
+    </div>
+
+    <div class="workBox" id="heightCheckBox">
+      <h3>Contrôle des hauteurs</h3>
+      <div class="muted">RoofScan privilégie le LiDAR HD. Une mesure terrain confirmée reste prioritaire sur toutes les bases de données.</div>
+      <div class="formGrid">
+        <div class="field">
+          <label for="measuredEaveHeight">Hauteur égout mesurée sur place (m)</label>
+          <input id="measuredEaveHeight" type="number" inputmode="decimal" min="0" max="100" step="0.01" placeholder="Ex. 5,86">
+        </div>
+        <div class="field">
+          <label for="measuredRidgeHeight">Hauteur faîtage mesurée sur place (m)</label>
+          <input id="measuredRidgeHeight" type="number" inputmode="decimal" min="0" max="100" step="0.01" placeholder="Facultatif">
+        </div>
+      </div>
+      <div class="workActions">
+        <button class="miniBtn" type="button" onclick="saveMeasuredHeights()">Enregistrer les hauteurs</button>
+        <button class="miniBtn" type="button" onclick="clearMeasuredHeights()">Revenir à l’automatique</button>
+      </div>
     </div>
 
     <div class="workBox" id="measureBox">
@@ -208,7 +229,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. La hauteur « égout » et la hauteur « faîtage » sont distinguées. Le matériau automatique croise l’orthophoto et la BD TOPO sans présenter une donnée incertaine comme certaine.
+  Données bâtiment : IGN BD TOPO® + LiDAR HD. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les hauteurs privilégient le LiDAR HD ; la BD TOPO n’est utilisée qu’en secours et une mesure terrain confirmée reste prioritaire.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -241,6 +262,7 @@ let analysisRun=0;
 let measurementLayer=L.layerGroup().addTo(map);
 let measurementMode=false;
 let manualPoints=[];
+let currentLidarHeights=null;
 
 function storedMaterialOverride(){
   if(!currentBuilding)return null;
@@ -585,6 +607,228 @@ function featureArea(f){
   }
 
   return 0;
+}
+
+
+function quantile(values,q){
+  const a=values.filter(Number.isFinite).sort((x,y)=>x-y);
+  if(!a.length)return null;
+  const pos=(a.length-1)*q;
+  const lo=Math.floor(pos),hi=Math.ceil(pos);
+  if(lo===hi)return a[lo];
+  return a[lo]+(a[hi]-a[lo])*(pos-lo);
+}
+
+function mainOuterRing(g){
+  const rings=geometryOuterRings(g);
+  if(!rings.length)return null;
+  return rings
+    .map(r=>({r,a:areaApprox(r)}))
+    .sort((a,b)=>b.a-a.a)[0].r;
+}
+
+function sampleInsideBuilding(feature){
+  const ring=mainOuterRing(feature?.geometry);
+  if(!ring?.length)return[];
+
+  const xs=ring.map(p=>p[0]),ys=ring.map(p=>p[1]);
+  const minLon=Math.min(...xs),maxLon=Math.max(...xs);
+  const minLat=Math.min(...ys),maxLat=Math.max(...ys);
+  const lat0=(minLat+maxLat)/2;
+  const widthM=(maxLon-minLon)*111320*Math.cos(lat0*Math.PI/180);
+  const heightM=(maxLat-minLat)*111320;
+
+  // Vise un pas proche de 1 m, limité pour rester très léger côté API.
+  const nx=clamp(Math.ceil(widthM/1.0),5,14);
+  const ny=clamp(Math.ceil(heightM/1.0),5,14);
+  const pts=[];
+
+  for(let iy=0;iy<ny;iy++){
+    const lat=minLat+(iy+0.5)/ny*(maxLat-minLat);
+    for(let ix=0;ix<nx;ix++){
+      const lon=minLon+(ix+0.5)/nx*(maxLon-minLon);
+      if(pointDansBatiment(lon,lat,feature.geometry)){
+        const edge=distanceBatiment(lon,lat,feature.geometry);
+        pts.push({lon,lat,edge});
+      }
+    }
+  }
+  return pts.slice(0,180);
+}
+
+function parseLidarHeight(elevation){
+  const measures=Array.isArray(elevation?.measures)?elevation.measures:[];
+  let mnt=null,mns=null,mnh=null;
+
+  for(const m of measures){
+    const z=Number(m?.z);
+    if(!Number.isFinite(z)||z<=-90000)continue;
+    const label=[
+      m?.source_name,m?.source_measure,m?.title,m?.name,m?.resource
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    if(label.includes('mnh')||label.includes('hauteur'))mnh=z;
+    else if(label.includes('mns')||label.includes('sursol'))mns=z;
+    else if(label.includes('mnt')||label.includes('terrain'))mnt=z;
+  }
+
+  if(Number.isFinite(mnh)&&mnh>0&&mnh<100)return mnh;
+  if(Number.isFinite(mns)&&Number.isFinite(mnt)){
+    const h=mns-mnt;
+    if(h>0&&h<100)return h;
+  }
+  return null;
+}
+
+async function fetchLidarHeights(building){
+  const pts=sampleInsideBuilding(building.f);
+  if(pts.length<5)throw Error('pas assez de points dans l’emprise');
+
+  const u=new URL('https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json');
+  u.searchParams.set('lon',pts.map(p=>p.lon.toFixed(7)).join('|'));
+  u.searchParams.set('lat',pts.map(p=>p.lat.toFixed(7)).join('|'));
+  u.searchParams.set('resource','ign_lidar_hd_mnx_multi_wld');
+  u.searchParams.set('delimiter','|');
+  u.searchParams.set('indent','false');
+  u.searchParams.set('measures','true');
+  u.searchParams.set('zonly','false');
+
+  const r=await fetch(u);
+  if(!r.ok)throw Error('LiDAR '+r.status);
+  const j=await r.json();
+  const elevations=Array.isArray(j?.elevations)?j.elevations:[];
+
+  const vals=[];
+  elevations.forEach((e,i)=>{
+    const h=parseLidarHeight(e);
+    if(Number.isFinite(h)&&h>=2&&h<=60){
+      vals.push({h,edge:pts[i]?.edge??999});
+    }
+  });
+
+  if(vals.length<5)throw Error('hauteurs LiDAR non disponibles');
+
+  const all=vals.map(x=>x.h);
+  // Le bord de toit peut contenir des pixels mixtes. On utilise donc un quantile
+  // bas robuste pour l’égout et un quantile haut robuste pour le faîtage.
+  const eave=quantile(all,0.18);
+  const ridge=quantile(all,0.95);
+  if(!Number.isFinite(eave)||!Number.isFinite(ridge)||ridge<eave){
+    throw Error('profil LiDAR incohérent');
+  }
+
+  return{
+    eave,
+    ridge,
+    samples:all.length,
+    spread:ridge-eave
+  };
+}
+
+function heightStoreKey(){
+  return currentBuilding?'roofscan-heights-v1-'+currentBuilding.id:null;
+}
+
+function storedMeasuredHeights(){
+  if(!currentBuilding)return null;
+  try{
+    const raw=localStorage.getItem(heightStoreKey());
+    if(!raw)return null;
+    const d=JSON.parse(raw);
+    return{
+      eave:Number.isFinite(+d.eave)?+d.eave:null,
+      ridge:Number.isFinite(+d.ridge)?+d.ridge:null
+    };
+  }catch(e){return null;}
+}
+
+function updateHeightDisplay(){
+  if(!currentBuilding)return;
+
+  const measured=storedMeasuredHeights();
+  const lidar=currentLidarHeights;
+  const bd=currentBuilding.height||null;
+  const ridgeBd=Number.isFinite(currentBuilding.ridgeHeight)?currentBuilding.ridgeHeight:null;
+
+  let eave=null,eaveSource='Non disponible';
+  let ridge=null,ridgeSource='Non disponible';
+
+  if(Number.isFinite(measured?.eave)){
+    eave=measured.eave;
+    eaveSource='Mesure terrain confirmée';
+  }else if(Number.isFinite(lidar?.eave)){
+    eave=lidar.eave;
+    eaveSource='LiDAR HD — estimation automatique ('+lidar.samples+' points)';
+  }else if(Number.isFinite(bd)&&bd>0){
+    eave=bd;
+    eaveSource='BD TOPO — donnée de secours, à contrôler';
+  }
+
+  if(Number.isFinite(measured?.ridge)){
+    ridge=measured.ridge;
+    ridgeSource='Mesure terrain confirmée';
+  }else if(Number.isFinite(lidar?.ridge)){
+    ridge=lidar.ridge;
+    ridgeSource='LiDAR HD — estimation automatique ('+lidar.samples+' points)';
+  }else if(Number.isFinite(ridgeBd)){
+    ridge=ridgeBd;
+    ridgeSource='BD TOPO Z_MAX_TOIT − Z_MIN_SOL — à contrôler';
+  }
+
+  document.getElementById('height').textContent=
+    Number.isFinite(eave)?eave.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'—';
+  document.getElementById('ridgeHeight').textContent=
+    Number.isFinite(ridge)?ridge.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m':'—';
+  document.getElementById('heightSource').textContent=eaveSource;
+  document.getElementById('ridgeSource').textContent=ridgeSource;
+  document.getElementById('bdTopoHeight').textContent=
+    bd?bd.toLocaleString('fr-FR')+' m — référence brute seulement':'Non renseignée';
+
+  const e=document.getElementById('measuredEaveHeight');
+  const rr=document.getElementById('measuredRidgeHeight');
+  if(e&&!e.matches(':focus'))e.value=Number.isFinite(measured?.eave)?String(measured.eave).replace('.',','):'';
+  if(rr&&!rr.matches(':focus'))rr.value=Number.isFinite(measured?.ridge)?String(measured.ridge).replace('.',','):'';
+}
+
+function saveMeasuredHeights(){
+  if(!currentBuilding)return;
+  const parse=id=>{
+    const v=parseFloat(String(document.getElementById(id).value||'').replace(',','.'));
+    return Number.isFinite(v)&&v>0?v:null;
+  };
+  const eave=parse('measuredEaveHeight');
+  const ridge=parse('measuredRidgeHeight');
+  if(!eave&&!ridge){
+    msg('Entre au moins une hauteur mesurée.');
+    return;
+  }
+  try{
+    localStorage.setItem(heightStoreKey(),JSON.stringify({eave,ridge,updatedAt:new Date().toISOString()}));
+  }catch(e){}
+  updateHeightDisplay();
+  msg('Hauteur terrain enregistrée. Elle devient prioritaire sur IGN et LiDAR.');
+}
+
+function clearMeasuredHeights(){
+  if(!currentBuilding)return;
+  try{localStorage.removeItem(heightStoreKey());}catch(e){}
+  updateHeightDisplay();
+  msg('Mesure terrain supprimée. RoofScan revient au calcul automatique.');
+}
+
+async function analyzeLidarHeights(building,runId){
+  const src=document.getElementById('heightSource');
+  if(src)src.textContent='Analyse LiDAR HD en cours…';
+  try{
+    const h=await fetchLidarHeights(building);
+    if(runId!==analysisRun)return;
+    currentLidarHeights=h;
+    updateHeightDisplay();
+  }catch(e){
+    if(runId!==analysisRun)return;
+    currentLidarHeights=null;
+    updateHeightDisplay();
+  }
 }
 
 
@@ -1396,10 +1640,24 @@ function generateRoofReport(){
   line('Adresse :',current.label);
   line('Date :',new Date().toLocaleString('fr-FR'));
   line('Identifiant IGN :',currentBuilding.id);
-  line('Hauteur à l’égout (IGN) :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
-  line('Hauteur au faîtage (IGN) :',Number.isFinite(currentBuilding.ridgeHeight)
-    ?currentBuilding.ridgeHeight.toLocaleString('fr-FR',{maximumFractionDigits:1})+' m'
+  const measuredH=storedMeasuredHeights();
+  const eaveReport=Number.isFinite(measuredH?.eave)
+    ?measuredH.eave
+    :Number.isFinite(currentLidarHeights?.eave)
+      ?currentLidarHeights.eave
+      :currentBuilding.height||null;
+  const ridgeReport=Number.isFinite(measuredH?.ridge)
+    ?measuredH.ridge
+    :Number.isFinite(currentLidarHeights?.ridge)
+      ?currentLidarHeights.ridge
+      :Number.isFinite(currentBuilding.ridgeHeight)?currentBuilding.ridgeHeight:null;
+  line('Hauteur à l’égout :',Number.isFinite(eaveReport)
+    ?eaveReport.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m'
     :'Non disponible');
+  line('Hauteur au faîtage :',Number.isFinite(ridgeReport)
+    ?ridgeReport.toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m'
+    :'Non disponible');
+  line('Source hauteur égout :',document.getElementById('heightSource').textContent);
   const manualMeasurement=getManualMeasurement();
   line('Surface automatique IGN :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
   line('Surface utilisée :',Math.round(surfaceForCalculations()).toLocaleString('fr-FR')+' m²');
@@ -1473,13 +1731,18 @@ function resetBuilding(){
   layer.clearLayers();
   currentBuilding=null;
   currentVisualResult=null;
+  currentLidarHeights=null;
   analysisRun++;
   document.getElementById('buildingCard').classList.add('hidden');
   document.getElementById('visualMaterial').textContent='En attente…';
   document.getElementById('visualConfidence').textContent='—';
   document.getElementById('ridgeHeight').textContent='—';
+  document.getElementById('heightSource').textContent='—';
   document.getElementById('ridgeSource').textContent='—';
+  document.getElementById('bdTopoHeight').textContent='—';
   document.getElementById('ignMaterial').textContent='—';
+  document.getElementById('measuredEaveHeight').value='';
+  document.getElementById('measuredRidgeHeight').value='';
   document.getElementById('usedArea').textContent='—';
   document.getElementById('areaSource').textContent='Contour automatique IGN';
   measurementMode=false;
@@ -1648,19 +1911,10 @@ async function analyzeBuilding(){
     }
 
     document.getElementById('buildingAddress').textContent=current.label;
-    document.getElementById('height').textContent=
-      x.height?x.height.toLocaleString('fr-FR')+' m':'Non renseignée';
-    document.getElementById('ridgeHeight').textContent=
-      Number.isFinite(x.ridgeHeight)
-        ?x.ridgeHeight.toLocaleString('fr-FR',{maximumFractionDigits:1})+' m'
-        :'Non disponible';
-    document.getElementById('ridgeSource').textContent=
-      Number.isFinite(x.ridgeHeight)
-        ?'Z_MAX_TOIT − Z_MIN_SOL'+
-          (Number.isFinite(x.altPrecision)?' · précision source '+x.altPrecision.toLocaleString('fr-FR')+' m':'')
-        :'Altitudes de toit IGN non disponibles pour ce bâtiment';
     currentBuilding=x;
     currentBuilding.matchQuality=quality;
+    currentLidarHeights=null;
+    updateHeightDisplay();
     document.getElementById('usage').textContent=x.usage;
     document.getElementById('nature').textContent=x.nature;
     document.getElementById('buildingDistance').textContent=
@@ -1678,11 +1932,14 @@ async function analyzeBuilding(){
 
     document.getElementById('buildingCard').classList.remove('hidden');
 
-    msg('Bâtiment identifié. Analyse visuelle de la toiture en cours…');
+    msg('Bâtiment identifié. Analyses toiture et LiDAR en cours…');
     const runId=++analysisRun;
-    analyzeRoofVisual(x,runId).then(()=>{
+    Promise.allSettled([
+      analyzeRoofVisual(x,runId),
+      analyzeLidarHeights(x,runId)
+    ]).then(()=>{
       if(runId===analysisRun){
-        msg('Bâtiment identifié. Analyse visuelle terminée.');
+        msg('Bâtiment identifié. Analyses automatiques terminées.');
       }
     });
 
