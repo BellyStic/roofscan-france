@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v16</small>
+  <small>Analyse d’un bâtiment par adresse · v17</small>
 </header>
 
 <main class="wrap">
@@ -196,6 +196,8 @@
             <option>Shed</option>
             <option>Complexe / autre</option>
           </select>
+          <div class="muted" id="roofTypeAutoInfo" style="margin-top:6px">Détection automatique en attente…</div>
+          <button class="miniBtn hidden" id="autoRoofTypeBtn" type="button" style="margin-top:7px" onclick="clearRoofTypeOverride()">Revenir à l’automatique</button>
         </div>
       </div>
 
@@ -229,7 +231,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO® + LiDAR HD. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les hauteurs privilégient le LiDAR HD ; la BD TOPO n’est utilisée qu’en secours et une mesure terrain confirmée reste prioritaire.
+  Données bâtiment : IGN BD TOPO® + LiDAR HD. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan détecte automatiquement le type de toiture en croisant LiDAR HD et analyse de l’orthophoto ; la correction manuelle reste disponible en secours.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -263,6 +265,9 @@ let measurementLayer=L.layerGroup().addTo(map);
 let measurementMode=false;
 let manualPoints=[];
 let currentLidarHeights=null;
+let currentVisualRoofTypeResult=null;
+let currentLidarRoofTypeResult=null;
+let roofTypeMode='auto';
 
 function storedMaterialOverride(){
   if(!currentBuilding)return null;
@@ -702,7 +707,12 @@ async function fetchLidarHeights(building){
   elevations.forEach((e,i)=>{
     const h=parseLidarHeight(e);
     if(Number.isFinite(h)&&h>=2&&h<=60){
-      vals.push({h,edge:pts[i]?.edge??999});
+      vals.push({
+        h,
+        edge:pts[i]?.edge??999,
+        lon:pts[i]?.lon,
+        lat:pts[i]?.lat
+      });
     }
   });
 
@@ -721,8 +731,355 @@ async function fetchLidarHeights(building){
     eave,
     ridge,
     samples:all.length,
-    spread:ridge-eave
+    spread:ridge-eave,
+    points:vals
+      .filter(v=>Number.isFinite(v.lon)&&Number.isFinite(v.lat))
+      .map(v=>({lon:v.lon,lat:v.lat,h:v.h,edge:v.edge}))
   };
+}
+
+function solveLinearSystem(A,b){
+  const n=A.length;
+  const M=A.map((row,i)=>[...row,b[i]]);
+
+  for(let col=0;col<n;col++){
+    let pivot=col;
+    for(let r=col+1;r<n;r++){
+      if(Math.abs(M[r][col])>Math.abs(M[pivot][col]))pivot=r;
+    }
+    if(Math.abs(M[pivot][col])<1e-9)return null;
+    [M[col],M[pivot]]=[M[pivot],M[col]];
+
+    const d=M[col][col];
+    for(let j=col;j<=n;j++)M[col][j]/=d;
+
+    for(let r=0;r<n;r++){
+      if(r===col)continue;
+      const k=M[r][col];
+      for(let j=col;j<=n;j++)M[r][j]-=k*M[col][j];
+    }
+  }
+  return M.map(row=>row[n]);
+}
+
+function fitLeastSquares(rows,ys){
+  if(!rows.length||rows.length!==ys.length)return null;
+  const p=rows[0].length;
+  const A=Array.from({length:p},()=>Array(p).fill(0));
+  const b=Array(p).fill(0);
+
+  for(let i=0;i<rows.length;i++){
+    for(let a=0;a<p;a++){
+      b[a]+=rows[i][a]*ys[i];
+      for(let c=0;c<p;c++)A[a][c]+=rows[i][a]*rows[i][c];
+    }
+  }
+
+  const beta=solveLinearSystem(A,b);
+  if(!beta)return null;
+
+  const mean=ys.reduce((a,v)=>a+v,0)/ys.length;
+  let sse=0,sst=0;
+  for(let i=0;i<rows.length;i++){
+    const pred=rows[i].reduce((z,v,j)=>z+v*beta[j],0);
+    sse+=(ys[i]-pred)**2;
+    sst+=(ys[i]-mean)**2;
+  }
+
+  return{
+    beta,
+    rmse:Math.sqrt(sse/rows.length),
+    r2:sst>1e-9?1-sse/sst:0
+  };
+}
+
+function classifyRoofTypeFromLidar(lidar){
+  const pts=Array.isArray(lidar?.points)?lidar.points:[];
+  if(pts.length<12||!Number.isFinite(lidar?.spread))return null;
+
+  const spread=lidar.spread;
+  if(spread<0.55){
+    return{type:'Toit-terrasse',confidence:0.93,source:'LiDAR HD'};
+  }
+
+  const lon0=pts.reduce((a,p)=>a+p.lon,0)/pts.length;
+  const lat0=pts.reduce((a,p)=>a+p.lat,0)/pts.length;
+  const kx=111320*Math.cos(lat0*Math.PI/180);
+  const xy=pts.map(p=>({
+    x:(p.lon-lon0)*kx,
+    y:(p.lat-lat0)*111320,
+    h:p.h
+  }));
+  const ys=xy.map(p=>p.h);
+
+  const plane=fitLeastSquares(xy.map(p=>[1,p.x,p.y]),ys);
+  const planeNorm=plane?plane.rmse/Math.max(spread,0.2):999;
+  const planeSlope=plane?Math.hypot(plane.beta[1],plane.beta[2]):0;
+
+  let bestTwo=null;
+  let bestFour=null;
+
+  for(let deg=0;deg<180;deg+=10){
+    const a=deg*Math.PI/180;
+    const ca=Math.cos(a),sa=Math.sin(a);
+
+    const uv=xy.map(p=>({
+      u:p.x*ca+p.y*sa,
+      v:-p.x*sa+p.y*ca,
+      h:p.h
+    }));
+
+    const two=fitLeastSquares(uv.map(p=>[1,Math.abs(p.v)]),ys);
+    if(two&&two.beta[1]<-0.015){
+      const cand={...two,angle:deg,norm:two.rmse/Math.max(spread,0.2)};
+      if(!bestTwo||cand.rmse<bestTwo.rmse)bestTwo=cand;
+    }
+
+    const four=fitLeastSquares(uv.map(p=>[1,Math.abs(p.u),Math.abs(p.v)]),ys);
+    if(four&&four.beta[1]<-0.010&&four.beta[2]<-0.010){
+      const cand={...four,angle:deg,norm:four.rmse/Math.max(spread,0.2)};
+      if(!bestFour||cand.rmse<bestFour.rmse)bestFour=cand;
+    }
+  }
+
+  if(plane&&planeNorm<0.20&&planeSlope>0.035){
+    const c=clamp(0.72+(0.20-planeNorm)*0.9+Math.min(0.12,planeSlope),0.72,0.94);
+    return{type:'1 pan',confidence:c,source:'LiDAR HD',metrics:{planeNorm}};
+  }
+
+  if(bestFour&&bestFour.norm<0.22&&
+     (!bestTwo||bestFour.rmse<bestTwo.rmse*0.88)){
+    const c=clamp(0.74+(0.22-bestFour.norm)*0.9,0.74,0.94);
+    return{type:'4 pans',confidence:c,source:'LiDAR HD',metrics:{fourNorm:bestFour.norm}};
+  }
+
+  if(bestTwo&&bestTwo.norm<0.27){
+    const gain=plane?1-bestTwo.rmse/Math.max(plane.rmse,1e-6):0.2;
+    const c=clamp(0.72+(0.27-bestTwo.norm)*0.75+Math.max(0,gain)*0.18,0.72,0.95);
+    return{type:'2 pans',confidence:c,source:'LiDAR HD',metrics:{twoNorm:bestTwo.norm}};
+  }
+
+  return null;
+}
+
+function maskPrincipalAxes(mask){
+  const mctx=mask.getContext('2d',{willReadFrequently:true});
+  const md=mctx.getImageData(0,0,mask.width,mask.height).data;
+  const stride=3;
+  const pts=[];
+
+  for(let y=1;y<mask.height-1;y+=stride){
+    for(let x=1;x<mask.width-1;x+=stride){
+      const i=(y*mask.width+x)*4;
+      if(md[i]>=128)pts.push({x,y});
+    }
+  }
+  if(pts.length<80)return null;
+
+  const cx=pts.reduce((a,p)=>a+p.x,0)/pts.length;
+  const cy=pts.reduce((a,p)=>a+p.y,0)/pts.length;
+  let xx=0,yy=0,xy=0;
+  pts.forEach(p=>{
+    const dx=p.x-cx,dy=p.y-cy;
+    xx+=dx*dx;yy+=dy*dy;xy+=dx*dy;
+  });
+  xx/=pts.length;yy/=pts.length;xy/=pts.length;
+
+  const tr=xx+yy;
+  const det=xx*yy-xy*xy;
+  const root=Math.sqrt(Math.max(0,tr*tr/4-det));
+  const l1=tr/2+root;
+  const l2=Math.max(1e-6,tr/2-root);
+
+  let vx=xy,vy=l1-xx;
+  if(Math.hypot(vx,vy)<1e-6){vx=1;vy=0;}
+  const norm=Math.hypot(vx,vy);
+  vx/=norm;vy/=norm;
+
+  return{
+    cx,cy,
+    ux:vx,uy:vy,
+    vx:-vy,vy:vx,
+    aspect:Math.sqrt(Math.max(1,l1/l2))
+  };
+}
+
+function classifyRoofTypeFromVisual(roof,mask,materialResult){
+  const axes=maskPrincipalAxes(mask);
+  if(!axes)return null;
+
+  const ctx=roof.getContext('2d',{willReadFrequently:true});
+  const mctx=mask.getContext('2d',{willReadFrequently:true});
+  const img=ctx.getImageData(0,0,roof.width,roof.height).data;
+  const md=mctx.getImageData(0,0,mask.width,mask.height).data;
+  const gray=i=>img[i]*0.299+img[i+1]*0.587+img[i+2]*0.114;
+
+  let n=0,sumGU=0,sumGV=0,strong=0;
+  let su=0,sv=0,sg=0,suu=0,svv=0,sug=0,svg=0,sgg=0;
+  const stride=3;
+
+  for(let y=2;y<roof.height-2;y+=stride){
+    for(let x=2;x<roof.width-2;x+=stride){
+      const i=(y*roof.width+x)*4;
+      if(md[i]<128)continue;
+
+      const il=(y*roof.width+(x-1))*4;
+      const ir=(y*roof.width+(x+1))*4;
+      const it=((y-1)*roof.width+x)*4;
+      const ib=((y+1)*roof.width+x)*4;
+      if(md[il]<128||md[ir]<128||md[it]<128||md[ib]<128)continue;
+
+      const gx=(gray(ir)-gray(il))/2;
+      const gy=(gray(ib)-gray(it))/2;
+      const gu=Math.abs(gx*axes.ux+gy*axes.uy);
+      const gv=Math.abs(gx*axes.vx+gy*axes.vy);
+      const mag=Math.hypot(gx,gy);
+      if(mag>8){
+        sumGU+=gu;
+        sumGV+=gv;
+        strong++;
+      }
+
+      const u=(x-axes.cx)*axes.ux+(y-axes.cy)*axes.uy;
+      const v=(x-axes.cx)*axes.vx+(y-axes.cy)*axes.vy;
+      const g=gray(i);
+      n++;
+      su+=u;sv+=v;sg+=g;
+      suu+=u*u;svv+=v*v;sgg+=g*g;
+      sug+=u*g;svg+=v*g;
+    }
+  }
+
+  if(n<120||strong<25)return null;
+
+  const corr=(sxy,sx,sxx)=>{
+    const num=n*sxy-sx*sg;
+    const den=Math.sqrt(Math.max(1e-9,(n*sxx-sx*sx)*(n*sgg-sg*sg)));
+    return Math.abs(num/den);
+  };
+  const corrU=corr(sug,su,suu);
+  const corrV=corr(svg,sv,svv);
+
+  const gu=sumGU/strong;
+  const gv=sumGV/strong;
+  const anis=Math.max(gu,gv)/Math.max(1,Math.min(gu,gv));
+  const pitchedMaterial=['Tuiles','Ardoises','Zinc'].includes(materialResult?.material);
+
+  // Une terrasse présente généralement peu de relief directionnel. On ne la
+  // déclare automatiquement que si l'analyse matériau va aussi dans ce sens.
+  if(materialResult?.material==='Toit-terrasse / autre'&&anis<1.20&&Math.max(corrU,corrV)<0.22){
+    return{type:'Toit-terrasse',confidence:0.80,source:'Photo aérienne IGN'};
+  }
+
+  // Un versant unique produit souvent un gradient global régulier.
+  const maxCorr=Math.max(corrU,corrV);
+  if(maxCorr>0.58&&anis<1.65){
+    const c=clamp(0.70+(maxCorr-0.58)*0.55,0.70,0.90);
+    return{type:'1 pan',confidence:c,source:'Photo aérienne IGN'};
+  }
+
+  // Sur un toit à deux pans, les lignes/ruptures dominent surtout dans une
+  // direction (perpendiculaire au faîtage). Les toitures rectangulaires
+  // renforcent ce diagnostic.
+  if(anis>=1.22&&axes.aspect>=1.10){
+    const c=clamp(
+      0.70+(anis-1.22)*0.16+Math.min(0.09,(axes.aspect-1.10)*0.08)+(pitchedMaterial?0.06:0),
+      0.70,0.93
+    );
+    return{type:'2 pans',confidence:c,source:'Photo aérienne IGN'};
+  }
+
+  // Des ruptures réparties dans les deux axes sur une emprise peu allongée
+  // sont plus compatibles avec une toiture à quatre pans.
+  if(anis<1.22&&axes.aspect<2.05&&pitchedMaterial){
+    const balance=1-Math.min(1,Math.abs(gu-gv)/Math.max(gu,gv,1));
+    const c=clamp(0.68+balance*0.13+(2.05-axes.aspect)*0.035,0.68,0.86);
+    return{type:'4 pans',confidence:c,source:'Photo aérienne IGN'};
+  }
+
+  return null;
+}
+
+function getStoredSiteData(){
+  if(!currentBuilding)return null;
+  try{
+    const raw=localStorage.getItem(siteDataKey());
+    return raw?JSON.parse(raw):null;
+  }catch(e){return null;}
+}
+
+function combineRoofTypeResults(){
+  const a=currentLidarRoofTypeResult;
+  const b=currentVisualRoofTypeResult;
+
+  if(a&&b&&a.type===b.type){
+    return{
+      type:a.type,
+      confidence:clamp(1-(1-a.confidence)*(1-b.confidence),0,0.98),
+      source:'LiDAR HD + photo aérienne IGN'
+    };
+  }
+
+  if(a&&b&&a.type!==b.type){
+    const hi=a.confidence>=b.confidence?a:b;
+    const lo=hi===a?b:a;
+    if(hi.confidence>=0.86&&hi.confidence-lo.confidence>=0.16){
+      return{
+        type:hi.type,
+        confidence:hi.confidence,
+        source:hi.source+' — autre source contradictoire'
+      };
+    }
+    return null;
+  }
+
+  const one=a||b;
+  if(one&&one.confidence>=0.70)return one;
+  return null;
+}
+
+function refreshAutoRoofType(){
+  if(!currentBuilding)return;
+
+  const select=document.getElementById('roofType');
+  const info=document.getElementById('roofTypeAutoInfo');
+  const btn=document.getElementById('autoRoofTypeBtn');
+  const stored=getStoredSiteData();
+  const manual=roofTypeMode==='manual'&&stored?.roofType;
+
+  if(manual){
+    select.value=stored.roofType;
+    info.textContent='Correction manuelle : '+stored.roofType;
+    btn.classList.remove('hidden');
+    return;
+  }
+
+  roofTypeMode='auto';
+  btn.classList.add('hidden');
+  const r=combineRoofTypeResults();
+
+  if(r){
+    select.value=r.type;
+    info.textContent='Détection automatique : '+r.type+' — confiance '+Math.round(r.confidence*100)+' % · '+r.source;
+  }else{
+    select.value='';
+    const waiting=(!currentVisualRoofTypeResult&&!currentLidarRoofTypeResult);
+    info.textContent=waiting
+      ?'Détection automatique en cours…'
+      :'Type non déterminé avec assez de fiabilité — correction manuelle disponible.';
+  }
+}
+
+function clearRoofTypeOverride(){
+  if(!currentBuilding)return;
+  const data=getStoredSiteData()||{};
+  delete data.roofType;
+  data.roofTypeManual=false;
+  data.updatedAt=new Date().toISOString();
+  try{localStorage.setItem(siteDataKey(),JSON.stringify(data));}catch(e){}
+  roofTypeMode='auto';
+  refreshAutoRoofType();
+  msg('RoofScan utilise de nouveau la détection automatique du type de toiture.');
 }
 
 function heightStoreKey(){
@@ -869,11 +1226,15 @@ async function analyzeLidarHeights(building,runId){
     const h=await fetchLidarHeights(building);
     if(runId!==analysisRun)return;
     currentLidarHeights=h;
+    currentLidarRoofTypeResult=classifyRoofTypeFromLidar(h);
     updateHeightDisplay();
+    refreshAutoRoofType();
   }catch(e){
     if(runId!==analysisRun)return;
     currentLidarHeights=null;
+    currentLidarRoofTypeResult=null;
     updateHeightDisplay();
+    refreshAutoRoofType();
   }
 }
 
@@ -1188,6 +1549,8 @@ async function analyzeRoofVisual(building,runId){
     if(runId!==analysisRun)return;
 
     currentVisualResult=result;
+    currentVisualRoofTypeResult=classifyRoofTypeFromVisual(roof,mask,result);
+    refreshAutoRoofType();
     const pct=Math.round(result.confidence*100);
 
     if(result.accepted){
@@ -1205,10 +1568,12 @@ async function analyzeRoofVisual(building,runId){
   }catch(e){
     if(runId!==analysisRun)return;
     currentVisualResult=null;
+    currentVisualRoofTypeResult=null;
     visual.textContent='Indisponible';
     conf.textContent='—';
     info.textContent='Analyse visuelle impossible : '+e.message;
     updateMaterialDisplay();
+    refreshAutoRoofType();
   }
 }
 
@@ -1552,9 +1917,12 @@ function saveSiteData(){
   if(!currentBuilding)return;
 
   const deg=parseFloat(String(document.getElementById('roofPitchDeg').value).replace(',','.'));
+  const existing=getStoredSiteData()||{};
   const data={
+    ...existing,
     pitchDeg:Number.isFinite(deg)?deg:null,
-    roofType:document.getElementById('roofType').value||'',
+    roofType:roofTypeMode==='manual'?(document.getElementById('roofType').value||''):'',
+    roofTypeManual:roofTypeMode==='manual',
     elements:getCheckedElements(),
     notes:document.getElementById('siteNotes').value||'',
     updatedAt:new Date().toISOString()
@@ -1573,6 +1941,9 @@ function loadSiteData(){
   document.getElementById('roofPitchPct').value='';
   document.getElementById('realRoofArea').value='—';
   document.getElementById('roofType').value='';
+  document.getElementById('roofTypeAutoInfo').textContent='Détection automatique en attente…';
+  document.getElementById('autoRoofTypeBtn').classList.add('hidden');
+  roofTypeMode='auto';
   document.getElementById('siteNotes').value='';
   setCheckedElements([]);
   document.getElementById('saveState').textContent='Aucune donnée chantier enregistrée';
@@ -1588,7 +1959,15 @@ function loadSiteData(){
       document.getElementById('roofPitchDeg').value=+data.pitchDeg;
       calculateRealRoofArea();
     }
-    document.getElementById('roofType').value=data.roofType||'';
+    if(data.roofType){
+      roofTypeMode='manual';
+      document.getElementById('roofType').value=data.roofType;
+      document.getElementById('roofTypeAutoInfo').textContent='Correction manuelle : '+data.roofType;
+      document.getElementById('autoRoofTypeBtn').classList.remove('hidden');
+    }else{
+      roofTypeMode='auto';
+      refreshAutoRoofType();
+    }
     document.getElementById('siteNotes').value=data.notes||'';
     setCheckedElements(data.elements||[]);
     document.getElementById('saveState').textContent='Données chantier restaurées';
@@ -1719,6 +2098,9 @@ function generateRoofReport(){
   line('Source matériau :',material.source);
   line('Confiance analyse visuelle :',visualConf);
   line('Type de toiture :',roofType);
+  line('Source type toiture :',roofTypeMode==='manual'
+    ?'Correction manuelle'
+    :(combineRoofTypeResults()?.source||'Non déterminée'));
   line('Éléments présents :',elements.length?elements.join(', '):'Aucun élément renseigné');
 
   y+=3;
@@ -1767,7 +2149,15 @@ function bindSiteInputs(){
   });
 
   pct.addEventListener('input',calculateFromPercent);
-  document.getElementById('roofType').addEventListener('change',saveSiteData);
+  document.getElementById('roofType').addEventListener('change',e=>{
+    if(e.isTrusted){
+      roofTypeMode='manual';
+      document.getElementById('roofTypeAutoInfo').textContent=
+        e.target.value?'Correction manuelle : '+e.target.value:'Correction manuelle effacée';
+      document.getElementById('autoRoofTypeBtn').classList.toggle('hidden',!e.target.value);
+    }
+    saveSiteData();
+  });
   document.getElementById('siteNotes').addEventListener('input',saveSiteData);
   document.querySelectorAll('#roofElements input[type="checkbox"]').forEach(x=>{
     x.addEventListener('change',saveSiteData);
@@ -1781,6 +2171,9 @@ function resetBuilding(){
   currentBuilding=null;
   currentVisualResult=null;
   currentLidarHeights=null;
+  currentVisualRoofTypeResult=null;
+  currentLidarRoofTypeResult=null;
+  roofTypeMode='auto';
   analysisRun++;
   document.getElementById('buildingCard').classList.add('hidden');
   document.getElementById('visualMaterial').textContent='En attente…';
@@ -1810,6 +2203,8 @@ function resetBuilding(){
   document.getElementById('roofPitchPct').value='';
   document.getElementById('realRoofArea').value='—';
   document.getElementById('roofType').value='';
+  document.getElementById('roofTypeAutoInfo').textContent='Détection automatique en attente…';
+  document.getElementById('autoRoofTypeBtn').classList.add('hidden');
   document.getElementById('siteNotes').value='';
   setCheckedElements([]);
   document.getElementById('saveState').textContent='—';
