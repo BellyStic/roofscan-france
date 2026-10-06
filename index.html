@@ -909,6 +909,7 @@ function calculateRealRoofArea(){
 
   const deg=parseFloat(String(degEl.value).replace(',','.'));
   if(!Number.isFinite(deg)||deg<0||deg>=89){
+    pctEl.value='';
     out.value='—';
     return null;
   }
