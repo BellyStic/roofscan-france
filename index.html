@@ -33,6 +33,11 @@
     .detail span:first-child{color:#65788a}
     .detail strong{text-align:right;overflow-wrap:anywhere}
     .hint{margin-top:10px;padding:10px;border-radius:10px;background:#f7fafc;color:#52687a;font-size:12px}
+    .materialBox{margin-top:12px;padding:12px;border-radius:12px;background:#fff8e6;border:1px solid #f0d99a}
+    .materialBox strong{display:block;margin-bottom:7px}
+    .materialActions{display:flex;flex-wrap:wrap;gap:7px;margin-top:9px}
+    .miniBtn{border:1px solid #cbd7e2;background:#fff;color:#16344f;border-radius:9px;padding:8px 10px;font-weight:700;cursor:pointer}
+    .miniBtn.active{background:#0b2b4c;color:#fff;border-color:#0b2b4c}
     .hidden{display:none}
     footer{padding:18px 14px 28px;color:#6b7d8d;font-size:11px;text-align:center}
     @media(max-width:700px){
@@ -76,10 +81,24 @@
 
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
+      <div class="detail"><span>Donnée foncière toiture</span><strong id="materialSource">—</strong></div>
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
       <div class="hint">* Surface calculée depuis l’emprise horizontale IGN. Une toiture inclinée peut avoir une surface réelle supérieure.</div>
+    </div>
+
+    <div class="materialBox">
+      <strong>Vérification visuelle du matériau</strong>
+      <div class="muted">La donnée foncière peut être ancienne ou erronée. Si la photo aérienne ou le terrain confirme le matériau, tu peux le corriger ici.</div>
+      <div class="materialActions" id="materialActions">
+        <button class="miniBtn" onclick="setMaterialOverride('Zinc')">Zinc</button>
+        <button class="miniBtn" onclick="setMaterialOverride('Tuiles')">Tuiles</button>
+        <button class="miniBtn" onclick="setMaterialOverride('Ardoises')">Ardoises</button>
+        <button class="miniBtn" onclick="setMaterialOverride('Béton')">Béton</button>
+        <button class="miniBtn" onclick="setMaterialOverride('Autre')">Autre</button>
+        <button class="miniBtn" onclick="clearMaterialOverride()">Annuler correction</button>
+      </div>
     </div>
   </section>
 </main>
@@ -111,6 +130,64 @@ L.control.layers(
 let marker=null;
 let layer=L.layerGroup().addTo(map);
 let current=null;
+let currentBuilding=null;
+
+const VERIFIED_MATERIALS={
+  '40ruemariesorindefresne94400vitrysurseine':'Zinc'
+};
+
+function materialKey(){
+  return normalizeText(current?.label||'');
+}
+
+function storedMaterialOverride(){
+  if(!currentBuilding)return null;
+
+  const known=VERIFIED_MATERIALS[materialKey()];
+  if(known)return{value:known,source:'Correction vérifiée'};
+
+  try{
+    const value=localStorage.getItem('roofscan-material-'+currentBuilding.id);
+    return value?{value,source:'Correction utilisateur'}:null;
+  }catch(e){
+    return null;
+  }
+}
+
+function updateMaterialDisplay(){
+  if(!currentBuilding)return;
+
+  const override=storedMaterialOverride();
+  const value=override?.value||currentBuilding.material;
+
+  document.getElementById('material').textContent=value;
+  document.getElementById('materialSource').textContent=
+    override
+      ? override.source+' — source foncière : '+currentBuilding.material
+      : currentBuilding.material+' — fichier foncier, à confirmer visuellement';
+
+  document.querySelectorAll('#materialActions .miniBtn').forEach(btn=>{
+    btn.classList.toggle('active',btn.textContent.trim()===value);
+  });
+}
+
+function setMaterialOverride(value){
+  if(!currentBuilding)return;
+  try{
+    localStorage.setItem('roofscan-material-'+currentBuilding.id,value);
+  }catch(e){}
+  updateMaterialDisplay();
+  msg('Matériau corrigé en « '+value+' » pour ce bâtiment.');
+}
+
+function clearMaterialOverride(){
+  if(!currentBuilding)return;
+  try{
+    localStorage.removeItem('roofscan-material-'+currentBuilding.id);
+  }catch(e){}
+  updateMaterialDisplay();
+  msg('Correction locale supprimée. La donnée foncière est de nouveau affichée.');
+}
 
 function msg(t){
   document.getElementById('status').textContent=t;
@@ -416,6 +493,7 @@ function cleanUsage(p){
 
 function resetBuilding(){
   layer.clearLayers();
+  currentBuilding=null;
   document.getElementById('buildingCard').classList.add('hidden');
 }
 
@@ -553,13 +631,14 @@ async function analyzeBuilding(){
       Math.round(x.area).toLocaleString('fr-FR')+' m²';
     document.getElementById('height').textContent=
       x.height?x.height.toLocaleString('fr-FR')+' m':'Non renseignée';
-    document.getElementById('material').textContent=x.material;
+    currentBuilding=x;
     document.getElementById('usage').textContent=x.usage;
     document.getElementById('nature').textContent=x.nature;
     document.getElementById('buildingDistance').textContent=
       x.dedans?'Point situé dans l’emprise':Math.round(x.distance)+' m';
     document.getElementById('matchQuality').textContent=quality;
     document.getElementById('buildingId').textContent=x.id;
+    updateMaterialDisplay();
 
     document.getElementById('matchInfo').textContent=
       x.dedans
