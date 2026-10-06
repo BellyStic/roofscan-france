@@ -60,7 +60,7 @@
 
   <section class="card">
     <div id="map"></div>
-    <div class="hint">🛰️ Pour voir le toit en photo aérienne, ouvre le bouton des couches en haut à droite de la carte et choisis « Vue aérienne IGN ».</div>
+    <div class="hint">🛰️ La photo aérienne IGN est affichée par défaut. Le contour bleu correspond uniquement au bâtiment retenu pour l’adresse recherchée.</div>
   </section>
 
   <section id="buildingCard" class="card hidden">
@@ -68,7 +68,7 @@
     <div class="muted" id="matchInfo">—</div>
 
     <div class="grid">
-      <div class="stat"><span>Surface au sol</span><b id="area">—</b></div>
+      <div class="stat"><span>Surface toiture projetée*</span><b id="area">—</b></div>
       <div class="stat"><span>Hauteur IGN</span><b id="height">—</b></div>
       <div class="stat"><span>Matériau toiture</span><b id="material">—</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
@@ -76,13 +76,16 @@
 
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
+      <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
+      <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
+      <div class="hint">* Surface calculée depuis l’emprise horizontale IGN. Une toiture inclinée peut avoir une surface réelle supérieure.</div>
     </div>
   </section>
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Vue aérienne : IGN. La surface affichée correspond à l’emprise au sol calculée à partir de la géométrie du bâtiment.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan n’invente pas une pente de toiture lorsqu’elle n’est pas fournie par la donnée source.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -92,15 +95,15 @@ const map=L.map('map').setView([48.8566,2.3522],16);
 const plan=L.tileLayer(
   'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
   {attribution:'© OpenStreetMap contributors',maxZoom:20}
-).addTo(map);
+);
 
 const ortho=L.tileLayer(
   'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&FORMAT=image/jpeg&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}',
   {attribution:'© IGN',maxZoom:19}
-);
+).addTo(map);
 
 L.control.layers(
-  {'Plan':plan,'Vue aérienne IGN':ortho},
+  {'Vue aérienne IGN':ortho,'Plan':plan},
   null,
   {position:'topright',collapsed:true}
 ).addTo(map);
@@ -111,6 +114,48 @@ let current=null;
 
 function msg(t){
   document.getElementById('status').textContent=t;
+}
+
+function normalizeText(v){
+  return String(v||'')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g,'');
+}
+
+function extractHouseNumber(q){
+  const m=String(q||'').trim().match(/^(\d+\s*(?:bis|ter|quater)?[a-z]?)/i);
+  return m?normalizeText(m[1]):null;
+}
+
+function pickAddress(features,q){
+  const list=Array.isArray(features)?features:[];
+  if(!list.length)return null;
+
+  const wantedNumber=extractHouseNumber(q);
+  const postcodeMatch=String(q||'').match(/\b\d{5}\b/);
+  const wantedPostcode=postcodeMatch?postcodeMatch[0]:null;
+
+  const ranked=list.map(f=>{
+    const p=f.properties||{};
+    const candidateNumber=normalizeText(p.housenumber||'');
+    let rank=Number(p.score)||0;
+
+    if(wantedNumber){
+      rank+=candidateNumber===wantedNumber?2:-2;
+    }
+    if(wantedPostcode){
+      rank+=String(p.postcode||'')===wantedPostcode?1:-1;
+    }
+    if(p.type==='housenumber')rank+=0.5;
+
+    return{f,rank,candidateNumber};
+  }).sort((a,b)=>b.rank-a.rank);
+
+  const best=ranked[0];
+  if(wantedNumber&&best.candidateNumber!==wantedNumber)return null;
+  return best.f;
 }
 
 function technicalBBox(lat,lon,r){
@@ -274,7 +319,7 @@ async function searchAddress(){
 
   try{
     const r=await fetch(
-      'https://api-adresse.data.gouv.fr/search/?limit=1&q='+encodeURIComponent(q)
+      'https://data.geopf.fr/geocodage/search/?limit=8&q='+encodeURIComponent(q)
     );
 
     if(!r.ok)throw Error('Géocodage '+r.status);
@@ -286,7 +331,13 @@ async function searchAddress(){
       return;
     }
 
-    const f=j.features[0];
+    const f=pickAddress(j.features,q);
+
+    if(!f){
+      msg('Adresse exacte non confirmée. Vérifie le numéro, la rue et le code postal.');
+      return;
+    }
+
     const [lon,lat]=f.geometry.coordinates;
 
     current={
@@ -349,16 +400,39 @@ async function analyzeBuilding(){
       };
     });
 
-    arr.sort((a,b)=>{
-      if(a.dedans&&!b.dedans)return -1;
-      if(!a.dedans&&b.dedans)return 1;
-      return a.distance-b.distance;
-    });
+    const inside=arr
+      .filter(x=>x.dedans)
+      .sort((a,b)=>b.area-a.area);
 
-    const x=arr[0];
+    const nearby=arr
+      .filter(x=>!x.dedans&&x.distance<=30)
+      .sort((a,b)=>a.distance-b.distance);
 
-    if(!x||(!x.dedans&&x.distance>60)){
-      msg('Aucun bâtiment IGN suffisamment proche de cette adresse.');
+    let x=null;
+    let quality='';
+
+    if(inside.length){
+      x=inside[0];
+      quality='Très élevée';
+    }else if(nearby.length){
+      const first=nearby[0];
+      const second=nearby[1];
+
+      if(second&&first.distance>8&&(second.distance-first.distance)<2){
+        msg('Correspondance ambiguë : plusieurs bâtiments sont presque à la même distance. RoofScan préfère ne pas deviner.');
+        return;
+      }
+
+      x=first;
+      quality=first.distance<=8
+        ? 'Élevée'
+        : first.distance<=18
+          ? 'Bonne'
+          : 'À confirmer';
+    }
+
+    if(!x){
+      msg('Aucun bâtiment IGN fiable à moins de 30 m du point d’adresse. RoofScan préfère ne pas afficher un voisin.');
       return;
     }
 
@@ -386,13 +460,15 @@ async function analyzeBuilding(){
     document.getElementById('material').textContent=x.material;
     document.getElementById('usage').textContent=x.usage;
     document.getElementById('nature').textContent=x.nature;
+    document.getElementById('buildingDistance').textContent=
+      x.dedans?'Point situé dans l’emprise':Math.round(x.distance)+' m';
+    document.getElementById('matchQuality').textContent=quality;
     document.getElementById('buildingId').textContent=x.id;
 
     document.getElementById('matchInfo').textContent=
       x.dedans
-        ? 'Bâtiment correspondant au point d’adresse.'
-        : 'Bâtiment le plus proche du point d’adresse ('+
-          Math.round(x.distance)+' m).';
+        ? 'Correspondance directe : le point BAN tombe dans l’emprise du bâtiment.'
+        : 'Correspondance par proximité contrôlée : un seul bâtiment est retenu.';
 
     document.getElementById('buildingCard').classList.remove('hidden');
 
