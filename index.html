@@ -720,17 +720,17 @@ async function analyzeRoofVisual(building,runId){
     const {roof,mask,z}=await buildRoofCanvas(building.f);
     if(runId!==analysisRun)return;
 
-    // Preview: image with the exact analysed footprint lightly highlighted.
+    const result=classifyRoofPixels(roof,mask);
+
+    // Preview only: highlight the analysed footprint after classification.
     const pctx=roof.getContext('2d');
     pctx.save();
-    pctx.globalAlpha=.20;
+    pctx.globalAlpha=.14;
     pctx.drawImage(mask,0,0);
     pctx.restore();
 
     preview.src=roof.toDataURL('image/jpeg',0.90);
     preview.style.display='block';
-
-    const result=classifyRoofPixels(roof,mask);
     if(runId!==analysisRun)return;
 
     currentVisualResult=result;
