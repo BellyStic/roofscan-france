@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v11</small>
+  <small>Analyse d’un bâtiment par adresse · v12</small>
 </header>
 
 <main class="wrap">
@@ -92,6 +92,7 @@
 
     <div class="grid">
       <div class="stat"><span>Surface toiture projetée*</span><b id="area">—</b></div>
+      <div class="stat"><span>Fourchette indicative</span><b id="areaRange">—</b></div>
       <div class="stat"><span>Hauteur IGN</span><b id="height">—</b></div>
       <div class="stat"><span>Matériau toiture</span><b id="material">À confirmer</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
@@ -104,7 +105,8 @@
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
-      <div class="hint">* Surface calculée depuis l’emprise horizontale IGN. Une toiture inclinée peut avoir une surface réelle supérieure.</div>
+      <div class="detail"><span>Marge indicative</span><strong id="areaUncertainty">—</strong></div>
+      <div class="hint">* Surface calculée depuis l’emprise horizontale IGN. La fourchette est une marge de sécurité indicative pour l’estimation, pas une précision de géomètre. Une toiture inclinée peut avoir une surface réelle supérieure.</div>
     </div>
 
     <div class="visualBox">
@@ -191,7 +193,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les surfaces inclinées sont des estimations calculées à partir de la pente renseignée.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les fourchettes affichées sont des marges indicatives de sécurité pour l’estimation chantier, pas des tolérances métrologiques officielles.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -881,6 +883,53 @@ function cleanUsage(p){
 }
 
 
+
+function areaUncertaintyInfo(building,matchQuality){
+  if(!building||!Number.isFinite(building.area)||building.area<=0){
+    return{pct:null,delta:null,min:null,max:null,label:'Non calculable'};
+  }
+
+  // Marge volontairement prudente pour une estimation chantier.
+  // Elle n'est pas présentée comme une précision métrologique de l'IGN.
+  let pct=0.08;
+
+  if(building.distance>0){
+    pct+=building.distance<=8?0.01:building.distance<=18?0.03:0.05;
+  }
+
+  if(matchQuality==='À confirmer')pct+=0.03;
+
+  if(building.area<80)pct+=0.03;
+  else if(building.area<150)pct+=0.02;
+  else if(building.area<300)pct+=0.01;
+
+  pct=clamp(pct,0.08,0.18);
+
+  const delta=Math.max(3,building.area*pct);
+  const min=Math.max(0,building.area-delta);
+  const max=building.area+delta;
+
+  return{
+    pct,
+    delta,
+    min,
+    max,
+    label:'± '+Math.round(pct*100)+' % (indicatif)'
+  };
+}
+
+function updateAreaUncertainty(matchQuality){
+  if(!currentBuilding)return;
+
+  const u=areaUncertaintyInfo(currentBuilding,matchQuality||currentBuilding.matchQuality||'');
+  document.getElementById('areaRange').textContent=
+    u.min!=null
+      ? Math.round(u.min).toLocaleString('fr-FR')+' à '+Math.round(u.max).toLocaleString('fr-FR')+' m²'
+      : '—';
+
+  document.getElementById('areaUncertainty').textContent=u.label||'—';
+}
+
 function siteDataKey(){
   return currentBuilding?'roofscan-site-v1-'+currentBuilding.id:null;
 }
@@ -1087,6 +1136,12 @@ function generateRoofReport(){
   line('Identifiant IGN :',currentBuilding.id);
   line('Hauteur IGN :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
   line('Surface projetée :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
+  const uncertainty=areaUncertaintyInfo(currentBuilding,currentBuilding.matchQuality||'');
+  line('Fourchette indicative :',
+    uncertainty.min!=null
+      ? Math.round(uncertainty.min).toLocaleString('fr-FR')+' à '+Math.round(uncertainty.max).toLocaleString('fr-FR')+' m²'
+      : 'Non calculable');
+  line('Marge indicative :',uncertainty.label||'Non calculable');
   line('Pente moyenne :',Number.isFinite(pitchDeg)
     ? pitchDeg.toLocaleString('fr-FR')+'°'+(Number.isFinite(pitchPct)?' / '+pitchPct.toLocaleString('fr-FR')+' %':'')
     :'Non renseignée');
@@ -1160,6 +1215,8 @@ function resetBuilding(){
   document.getElementById('buildingCard').classList.add('hidden');
   document.getElementById('visualMaterial').textContent='En attente…';
   document.getElementById('visualConfidence').textContent='—';
+  document.getElementById('areaRange').textContent='—';
+  document.getElementById('areaUncertainty').textContent='—';
   document.getElementById('visualInfo').textContent='RoofScan analysera uniquement les pixels du bâtiment sur l’orthophoto IGN.';
   const preview=document.getElementById('roofPreview');
   preview.style.display='none';
@@ -1308,12 +1365,14 @@ async function analyzeBuilding(){
     document.getElementById('height').textContent=
       x.height?x.height.toLocaleString('fr-FR')+' m':'Non renseignée';
     currentBuilding=x;
+    currentBuilding.matchQuality=quality;
     document.getElementById('usage').textContent=x.usage;
     document.getElementById('nature').textContent=x.nature;
     document.getElementById('buildingDistance').textContent=
       x.dedans?'Point situé dans l’emprise':Math.round(x.distance)+' m';
     document.getElementById('matchQuality').textContent=quality;
     document.getElementById('buildingId').textContent=x.id;
+    updateAreaUncertainty(quality);
     updateMaterialDisplay();
     loadSiteData();
 
