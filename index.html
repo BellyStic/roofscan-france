@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v12</small>
+  <small>Analyse d’un bâtiment par adresse · v13</small>
 </header>
 
 <main class="wrap">
@@ -91,8 +91,8 @@
     <div class="muted" id="matchInfo">—</div>
 
     <div class="grid">
-      <div class="stat"><span>Surface toiture projetée*</span><b id="area">—</b></div>
-      <div class="stat"><span>Fourchette indicative</span><b id="areaRange">—</b></div>
+      <div class="stat"><span>Surface automatique*</span><b id="area">—</b></div>
+      <div class="stat"><span>Surface utilisée</span><b id="usedArea">—</b></div>
       <div class="stat"><span>Hauteur IGN</span><b id="height">—</b></div>
       <div class="stat"><span>Matériau toiture</span><b id="material">À confirmer</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
@@ -105,8 +105,20 @@
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
       <div class="detail"><span>Fiabilité de la correspondance</span><strong id="matchQuality">—</strong></div>
       <div class="detail"><span>Identifiant IGN</span><strong id="buildingId">—</strong></div>
-      <div class="detail"><span>Marge indicative</span><strong id="areaUncertainty">—</strong></div>
-      <div class="hint">* Surface calculée depuis l’emprise horizontale IGN. La fourchette est une marge de sécurité indicative pour l’estimation, pas une précision de géomètre. Une toiture inclinée peut avoir une surface réelle supérieure.</div>
+      <div class="detail"><span>Source de la surface</span><strong id="areaSource">Contour automatique IGN</strong></div>
+      <div class="hint">* RoofScan calcule automatiquement la surface à partir du contour du bâtiment IGN. Tu peux la corriger manuellement uniquement si nécessaire.</div>
+    </div>
+
+    <div class="workBox" id="measureBox">
+      <h3>Mesure de la toiture</h3>
+      <div class="muted" id="measureInfo">Surface calculée automatiquement depuis le contour IGN du bâtiment.</div>
+      <div class="workActions">
+        <button class="miniBtn" id="manualMeasureBtn" type="button" onclick="startManualMeasure()">Corriger manuellement</button>
+        <button class="miniBtn hidden" id="finishMeasureBtn" type="button" onclick="finishManualMeasure()">Terminer la mesure</button>
+        <button class="miniBtn hidden" id="cancelMeasureBtn" type="button" onclick="cancelManualMeasure()">Annuler</button>
+        <button class="miniBtn hidden" id="resetMeasureBtn" type="button" onclick="resetManualMeasure()">Revenir à l’automatique</button>
+      </div>
+      <div class="hint">En mode manuel, touche chaque angle du toit sur la carte. Pour un rectangle, 4 points suffisent ; pour une forme irrégulière, ajoute tous les angles nécessaires.</div>
     </div>
 
     <div class="visualBox">
@@ -193,7 +205,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. Les fourchettes affichées sont des marges indicatives de sécurité pour l’estimation chantier, pas des tolérances métrologiques officielles.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan calcule automatiquement la surface depuis le contour du bâtiment ; une correction manuelle par points reste disponible si nécessaire.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -223,6 +235,9 @@ let current=null;
 let currentBuilding=null;
 let currentVisualResult=null;
 let analysisRun=0;
+let measurementLayer=L.layerGroup().addTo(map);
+let measurementMode=false;
+let manualPoints=[];
 
 function storedMaterialOverride(){
   if(!currentBuilding)return null;
@@ -884,51 +899,227 @@ function cleanUsage(p){
 
 
 
-function areaUncertaintyInfo(building,matchQuality){
-  if(!building||!Number.isFinite(building.area)||building.area<=0){
-    return{pct:null,delta:null,min:null,max:null,label:'Non calculable'};
-  }
 
-  // Marge volontairement prudente pour une estimation chantier.
-  // Elle n'est pas présentée comme une précision métrologique de l'IGN.
-  let pct=0.08;
-
-  if(building.distance>0){
-    pct+=building.distance<=8?0.01:building.distance<=18?0.03:0.05;
-  }
-
-  if(matchQuality==='À confirmer')pct+=0.03;
-
-  if(building.area<80)pct+=0.03;
-  else if(building.area<150)pct+=0.02;
-  else if(building.area<300)pct+=0.01;
-
-  pct=clamp(pct,0.08,0.18);
-
-  const delta=Math.max(3,building.area*pct);
-  const min=Math.max(0,building.area-delta);
-  const max=building.area+delta;
-
-  return{
-    pct,
-    delta,
-    min,
-    max,
-    label:'± '+Math.round(pct*100)+' % (indicatif)'
-  };
+function manualMeasureKey(){
+  return currentBuilding?'roofscan-manual-area-v1-'+currentBuilding.id:null;
 }
 
-function updateAreaUncertainty(matchQuality){
+function polygonAreaMeters(points){
+  if(!Array.isArray(points)||points.length<3)return 0;
+
+  const lat0=points.reduce((sum,p)=>sum+p.lat,0)/points.length;
+  const kx=111320*Math.cos(lat0*Math.PI/180);
+  const ky=111320;
+  let area=0;
+
+  for(let i=0;i<points.length;i++){
+    const p=points[i];
+    const q=points[(i+1)%points.length];
+    area+=(p.lng*kx)*(q.lat*ky)-(q.lng*kx)*(p.lat*ky);
+  }
+
+  return Math.abs(area)/2;
+}
+
+function getManualMeasurement(){
+  if(!currentBuilding)return null;
+
+  try{
+    const raw=localStorage.getItem(manualMeasureKey());
+    if(!raw)return null;
+
+    const data=JSON.parse(raw);
+    if(!Array.isArray(data.points)||data.points.length<3)return null;
+
+    const points=data.points
+      .map(p=>({lat:+p.lat,lng:+p.lng}))
+      .filter(p=>Number.isFinite(p.lat)&&Number.isFinite(p.lng));
+
+    if(points.length<3)return null;
+
+    const area=polygonAreaMeters(points);
+    return area>0?{points,area}:null;
+  }catch(e){
+    return null;
+  }
+}
+
+function surfaceForCalculations(){
+  const manual=getManualMeasurement();
+  return manual?.area||currentBuilding?.area||0;
+}
+
+function updateSurfaceDisplay(){
   if(!currentBuilding)return;
 
-  const u=areaUncertaintyInfo(currentBuilding,matchQuality||currentBuilding.matchQuality||'');
-  document.getElementById('areaRange').textContent=
-    u.min!=null
-      ? Math.round(u.min).toLocaleString('fr-FR')+' à '+Math.round(u.max).toLocaleString('fr-FR')+' m²'
-      : '—';
+  const manual=getManualMeasurement();
+  const used=manual?.area||currentBuilding.area;
 
-  document.getElementById('areaUncertainty').textContent=u.label||'—';
+  document.getElementById('area').textContent=
+    Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²';
+
+  document.getElementById('usedArea').textContent=
+    Math.round(used).toLocaleString('fr-FR')+' m²';
+
+  document.getElementById('areaSource').textContent=
+    manual?'Correction manuelle par points':'Contour automatique IGN';
+
+  document.getElementById('measureInfo').textContent=
+    manual
+      ? 'Correction manuelle enregistrée : '+Math.round(manual.area).toLocaleString('fr-FR')+' m².'
+      : 'Surface automatique : '+Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m² calculés depuis le contour IGN.';
+
+  document.getElementById('resetMeasureBtn').classList.toggle('hidden',!manual);
+
+  drawStoredManualMeasurement();
+  calculateRealRoofArea();
 }
+
+function drawStoredManualMeasurement(){
+  measurementLayer.clearLayers();
+
+  const manual=getManualMeasurement();
+  if(!manual)return;
+
+  const latlngs=manual.points.map(p=>[p.lat,p.lng]);
+  L.polygon(latlngs,{
+    color:'#f28c18',
+    weight:3,
+    fillColor:'#f28c18',
+    fillOpacity:.18
+  }).addTo(measurementLayer);
+
+  manual.points.forEach((p,i)=>{
+    L.circleMarker([p.lat,p.lng],{
+      radius:5,
+      color:'#f28c18',
+      weight:2,
+      fillColor:'#fff',
+      fillOpacity:1
+    }).bindTooltip(String(i+1),{permanent:false}).addTo(measurementLayer);
+  });
+}
+
+function startManualMeasure(){
+  if(!currentBuilding)return;
+
+  measurementMode=true;
+  manualPoints=[];
+  measurementLayer.clearLayers();
+
+  document.getElementById('manualMeasureBtn').classList.add('hidden');
+  document.getElementById('finishMeasureBtn').classList.remove('hidden');
+  document.getElementById('cancelMeasureBtn').classList.remove('hidden');
+  document.getElementById('measureInfo').textContent=
+    'Mode manuel actif : touche les angles du toit dans l’ordre. Minimum 3 points.';
+
+  msg('Mesure manuelle : place les points sur les angles du toit.');
+}
+
+function refreshManualDraft(){
+  measurementLayer.clearLayers();
+
+  manualPoints.forEach((p,i)=>{
+    L.circleMarker([p.lat,p.lng],{
+      radius:5,
+      color:'#f28c18',
+      weight:2,
+      fillColor:'#fff',
+      fillOpacity:1
+    }).bindTooltip(String(i+1),{permanent:true,direction:'top'}).addTo(measurementLayer);
+  });
+
+  if(manualPoints.length>=2){
+    L.polyline(manualPoints.map(p=>[p.lat,p.lng]),{
+      color:'#f28c18',
+      weight:3,
+      dashArray:'6,5'
+    }).addTo(measurementLayer);
+  }
+
+  if(manualPoints.length>=3){
+    const area=polygonAreaMeters(manualPoints);
+    document.getElementById('measureInfo').textContent=
+      manualPoints.length+' points — surface provisoire : '+
+      Math.round(area).toLocaleString('fr-FR')+' m².';
+  }
+}
+
+function finishManualMeasure(){
+  if(!measurementMode)return;
+
+  if(manualPoints.length<3){
+    msg('Il faut au moins 3 points pour calculer une surface.');
+    return;
+  }
+
+  const area=polygonAreaMeters(manualPoints);
+  if(!area){
+    msg('Mesure invalide. Recommence les points.');
+    return;
+  }
+
+  try{
+    localStorage.setItem(
+      manualMeasureKey(),
+      JSON.stringify({
+        points:manualPoints.map(p=>({lat:p.lat,lng:p.lng})),
+        area,
+        updatedAt:new Date().toISOString()
+      })
+    );
+  }catch(e){
+    msg('Impossible d’enregistrer cette mesure sur le téléphone.');
+    return;
+  }
+
+  measurementMode=false;
+  manualPoints=[];
+  document.getElementById('manualMeasureBtn').classList.remove('hidden');
+  document.getElementById('finishMeasureBtn').classList.add('hidden');
+  document.getElementById('cancelMeasureBtn').classList.add('hidden');
+
+  updateSurfaceDisplay();
+  saveSiteData();
+  msg('Mesure manuelle enregistrée : '+Math.round(area).toLocaleString('fr-FR')+' m².');
+}
+
+function cancelManualMeasure(){
+  measurementMode=false;
+  manualPoints=[];
+  document.getElementById('manualMeasureBtn').classList.remove('hidden');
+  document.getElementById('finishMeasureBtn').classList.add('hidden');
+  document.getElementById('cancelMeasureBtn').classList.add('hidden');
+  updateSurfaceDisplay();
+  msg('Mesure manuelle annulée.');
+}
+
+function resetManualMeasure(){
+  if(!currentBuilding)return;
+
+  try{
+    localStorage.removeItem(manualMeasureKey());
+  }catch(e){}
+
+  measurementMode=false;
+  manualPoints=[];
+  document.getElementById('manualMeasureBtn').classList.remove('hidden');
+  document.getElementById('finishMeasureBtn').classList.add('hidden');
+  document.getElementById('cancelMeasureBtn').classList.add('hidden');
+
+  updateSurfaceDisplay();
+  saveSiteData();
+  msg('RoofScan utilise de nouveau la surface automatique IGN.');
+}
+
+function handleManualMapClick(e){
+  if(!measurementMode||!currentBuilding)return;
+
+  manualPoints.push({lat:e.latlng.lat,lng:e.latlng.lng});
+  refreshManualDraft();
+}
+
+map.on('click',handleManualMapClick);
 
 function siteDataKey(){
   return currentBuilding?'roofscan-site-v1-'+currentBuilding.id:null;
@@ -966,7 +1157,8 @@ function calculateRealRoofArea(){
   const pct=Math.tan(deg*Math.PI/180)*100;
   pctEl.value=Number.isFinite(pct)?Math.round(pct*10)/10:'';
 
-  const real=currentBuilding.area/Math.cos(deg*Math.PI/180);
+  const baseArea=surfaceForCalculations();
+  const real=baseArea/Math.cos(deg*Math.PI/180);
   out.value=Math.round(real).toLocaleString('fr-FR')+' m²';
   return real;
 }
@@ -986,8 +1178,9 @@ function calculateFromPercent(){
   const deg=Math.atan(pct/100)*180/Math.PI;
   degEl.value=Math.round(deg*10)/10;
 
-  const real=currentBuilding
-    ? currentBuilding.area/Math.cos(deg*Math.PI/180)
+  const baseArea=currentBuilding?surfaceForCalculations():0;
+  const real=baseArea
+    ? baseArea/Math.cos(deg*Math.PI/180)
     : null;
 
   document.getElementById('realRoofArea').value=
@@ -1135,13 +1328,10 @@ function generateRoofReport(){
   line('Date :',new Date().toLocaleString('fr-FR'));
   line('Identifiant IGN :',currentBuilding.id);
   line('Hauteur IGN :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
-  line('Surface projetée :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
-  const uncertainty=areaUncertaintyInfo(currentBuilding,currentBuilding.matchQuality||'');
-  line('Fourchette indicative :',
-    uncertainty.min!=null
-      ? Math.round(uncertainty.min).toLocaleString('fr-FR')+' à '+Math.round(uncertainty.max).toLocaleString('fr-FR')+' m²'
-      : 'Non calculable');
-  line('Marge indicative :',uncertainty.label||'Non calculable');
+  const manualMeasurement=getManualMeasurement();
+  line('Surface automatique IGN :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
+  line('Surface utilisée :',Math.round(surfaceForCalculations()).toLocaleString('fr-FR')+' m²');
+  line('Source surface :',manualMeasurement?'Correction manuelle par points':'Contour automatique IGN');
   line('Pente moyenne :',Number.isFinite(pitchDeg)
     ? pitchDeg.toLocaleString('fr-FR')+'°'+(Number.isFinite(pitchPct)?' / '+pitchPct.toLocaleString('fr-FR')+' %':'')
     :'Non renseignée');
@@ -1215,8 +1405,16 @@ function resetBuilding(){
   document.getElementById('buildingCard').classList.add('hidden');
   document.getElementById('visualMaterial').textContent='En attente…';
   document.getElementById('visualConfidence').textContent='—';
-  document.getElementById('areaRange').textContent='—';
-  document.getElementById('areaUncertainty').textContent='—';
+  document.getElementById('usedArea').textContent='—';
+  document.getElementById('areaSource').textContent='Contour automatique IGN';
+  measurementMode=false;
+  manualPoints=[];
+  measurementLayer.clearLayers();
+  document.getElementById('manualMeasureBtn').classList.remove('hidden');
+  document.getElementById('finishMeasureBtn').classList.add('hidden');
+  document.getElementById('cancelMeasureBtn').classList.add('hidden');
+  document.getElementById('resetMeasureBtn').classList.add('hidden');
+  document.getElementById('measureInfo').textContent='Surface calculée automatiquement depuis le contour IGN du bâtiment.';
   document.getElementById('visualInfo').textContent='RoofScan analysera uniquement les pixels du bâtiment sur l’orthophoto IGN.';
   const preview=document.getElementById('roofPreview');
   preview.style.display='none';
@@ -1360,8 +1558,6 @@ async function analyzeBuilding(){
     }
 
     document.getElementById('buildingAddress').textContent=current.label;
-    document.getElementById('area').textContent=
-      Math.round(x.area).toLocaleString('fr-FR')+' m²';
     document.getElementById('height').textContent=
       x.height?x.height.toLocaleString('fr-FR')+' m':'Non renseignée';
     currentBuilding=x;
@@ -1372,7 +1568,7 @@ async function analyzeBuilding(){
       x.dedans?'Point situé dans l’emprise':Math.round(x.distance)+' m';
     document.getElementById('matchQuality').textContent=quality;
     document.getElementById('buildingId').textContent=x.id;
-    updateAreaUncertainty(quality);
+    updateSurfaceDisplay();
     updateMaterialDisplay();
     loadSiteData();
 
