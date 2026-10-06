@@ -69,7 +69,7 @@
 <body>
 <header>
   <div class="brand">🏠 RoofScan France</div>
-  <small>Analyse d’un bâtiment par adresse · v13</small>
+  <small>Analyse d’un bâtiment par adresse · v14</small>
 </header>
 
 <main class="wrap">
@@ -93,13 +93,16 @@
     <div class="grid">
       <div class="stat"><span>Surface automatique*</span><b id="area">—</b></div>
       <div class="stat"><span>Surface utilisée</span><b id="usedArea">—</b></div>
-      <div class="stat"><span>Hauteur IGN</span><b id="height">—</b></div>
+      <div class="stat"><span>Hauteur à l’égout (IGN)</span><b id="height">—</b></div>
+      <div class="stat"><span>Hauteur au faîtage (IGN)</span><b id="ridgeHeight">—</b></div>
       <div class="stat"><span>Matériau toiture</span><b id="material">À confirmer</b></div>
       <div class="stat"><span>Usage</span><b id="usage">—</b></div>
     </div>
 
     <div class="details">
       <div class="detail"><span>Nature</span><strong id="nature">—</strong></div>
+      <div class="detail"><span>Source hauteur faîtage</span><strong id="ridgeSource">—</strong></div>
+      <div class="detail"><span>Donnée matériau BD TOPO</span><strong id="ignMaterial">—</strong></div>
       <div class="detail"><span>Analyse visuelle IGN</span><strong id="visualMaterial">En attente…</strong></div>
       <div class="detail"><span>Source du matériau affiché</span><strong id="materialDecisionSource">À confirmer</strong></div>
       <div class="detail"><span>Distance adresse ↔ bâtiment</span><strong id="buildingDistance">—</strong></div>
@@ -205,7 +208,7 @@
 </main>
 
 <footer>
-  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. RoofScan calcule automatiquement la surface depuis le contour du bâtiment ; une correction manuelle par points reste disponible si nécessaire.
+  Données bâtiment : IGN BD TOPO®. Adresse : BAN / Géoplateforme. Vue aérienne : IGN. La hauteur « égout » et la hauteur « faîtage » sont distinguées. Le matériau automatique croise l’orthophoto et la BD TOPO sans présenter une donnée incertaine comme certaine.
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -250,24 +253,58 @@ function storedMaterialOverride(){
   }
 }
 
+function materialKey(v){
+  const x=String(v||'').toLowerCase();
+  if(x.includes('tuile'))return 'tuile';
+  if(x.includes('ardoise'))return 'ardoise';
+  if(x.includes('zinc')||x.includes('aluminium'))return 'zinc';
+  if(x.includes('béton')||x.includes('beton'))return 'beton';
+  if(x.includes('tôle')||x.includes('tole')||x.includes('métal')||x.includes('metal'))return 'metal';
+  return '';
+}
+
+function sameMaterial(a,b){
+  const ka=materialKey(a),kb=materialKey(b);
+  return !!ka&&ka===kb;
+}
+
 function updateMaterialDisplay(){
   if(!currentBuilding)return;
 
   const override=storedMaterialOverride();
-  const autoAccepted=currentVisualResult &&
-    currentVisualResult.accepted &&
-    currentVisualResult.material;
+  const visual=currentVisualResult;
+  const autoAccepted=visual&&visual.accepted&&visual.material;
+  const ign=currentBuilding.material&&currentBuilding.material!=='Non confirmé'
+    ?currentBuilding.material:null;
 
   const displayed=override?.value ||
-    (autoAccepted?currentVisualResult.material:'À confirmer');
+    (autoAccepted?visual.material:'À confirmer');
 
   document.getElementById('material').textContent=displayed;
-  document.getElementById('materialDecisionSource').textContent=
-    override
-      ? 'Confirmation manuelle'
-      : autoAccepted
-        ? 'Analyse visuelle IGN'
-        : 'Aucune conclusion assez fiable';
+
+  let source='Aucune conclusion assez fiable';
+  if(override){
+    source='Confirmation manuelle';
+  }else if(autoAccepted){
+    if(ign&&sameMaterial(ign,visual.material)){
+      source='Photo aérienne + BD TOPO concordantes';
+    }else if(ign){
+      source='Analyse photo prioritaire — BD TOPO contradictoire ('+ign+')';
+    }else{
+      source='Analyse photo aérienne IGN';
+    }
+  }else if(ign){
+    source='BD TOPO indique « '+ign+' », mais RoofScan attend une confirmation visuelle';
+  }
+
+  document.getElementById('materialDecisionSource').textContent=source;
+
+  const ignEl=document.getElementById('ignMaterial');
+  if(ignEl){
+    ignEl.textContent=ign
+      ?ign+' — donnée déclarative à contrôler'
+      :'Non renseignée';
+  }
 
   document.querySelectorAll('#materialActions .miniBtn').forEach(btn=>{
     btn.classList.toggle('active',override&&btn.textContent.trim()===override.value);
@@ -707,7 +744,7 @@ function classifyRoofPixels(roof,mask){
   const md=mctx.getImageData(0,0,mask.width,mask.height).data;
 
   let n=0,sumV=0,sumS=0;
-  let warm=0,darkNeutral=0,midNeutral=0,lightNeutral=0,green=0;
+  let warm=0,terracotta=0,brown=0,darkNeutral=0,midNeutral=0,lightNeutral=0,green=0;
   let edgeN=0,edgeHits=0;
   const stride=2;
 
@@ -719,7 +756,7 @@ function classifyRoofPixels(roof,mask){
       if(md[pi]<128)continue;
 
       const r=img[pi],g=img[pi+1],b=img[pi+2];
-      if(r<18&&g<18&&b<18)continue;
+      if(r<15&&g<15&&b<15)continue;
 
       const hsv=rgbToHsv(r,g,b);
       const V=hsv.v*255;
@@ -729,10 +766,12 @@ function classifyRoofPixels(roof,mask){
       sumV+=V;
       sumS+=S;
 
-      if(S>0.18&&((hsv.h<=55)||(hsv.h>=345))&&V>65)warm++;
-      if(S<0.23&&V<115)darkNeutral++;
-      if(S<0.22&&V>=105&&V<185)midNeutral++;
-      if(S<0.20&&V>=165)lightNeutral++;
+      if(S>0.16&&((hsv.h<=62)||(hsv.h>=345))&&V>52)warm++;
+      if(S>0.22&&((hsv.h<=48)||(hsv.h>=348))&&V>55)terracotta++;
+      if(S>0.18&&hsv.h>=12&&hsv.h<=58&&V>=42&&V<175)brown++;
+      if(S<0.28&&V<118)darkNeutral++;
+      if(S<0.22&&V>=102&&V<190)midNeutral++;
+      if(S<0.20&&V>=170)lightNeutral++;
       if(S>0.22&&hsv.h>=70&&hsv.h<=170)green++;
 
       if(x+stride<roof.width&&y+stride<roof.height){
@@ -742,13 +781,13 @@ function classifyRoofPixels(roof,mask){
           const gx=Math.abs(grayAt(pi)-grayAt(pj));
           const gy=Math.abs(grayAt(pi)-grayAt(pk));
           edgeN++;
-          if(gx+gy>34)edgeHits++;
+          if(gx+gy>32)edgeHits++;
         }
       }
     }
   }
 
-  if(n<120) return{
+  if(n<160) return{
     material:null,confidence:0,accepted:false,
     reason:'Image du toit trop petite pour une analyse fiable.'
   };
@@ -756,45 +795,62 @@ function classifyRoofPixels(roof,mask){
   const meanV=sumV/n;
   const meanS=sumS/n;
   const warmFrac=warm/n;
+  const terraFrac=terracotta/n;
+  const brownFrac=brown/n;
   const darkFrac=darkNeutral/n;
   const midFrac=midNeutral/n;
   const lightFrac=lightNeutral/n;
   const greenFrac=green/n;
   const edgeFrac=edgeN?edgeHits/edgeN:0;
+  const tileColorFrac=Math.max(terraFrac,(terraFrac+brownFrac)*0.72,warmFrac*0.82);
+
+  // Cas très parlant : toiture rouge/brune texturée. On privilégie alors la tuile.
+  if(tileColorFrac>=0.24&&greenFrac<0.18){
+    const confidence=clamp(
+      0.77 + tileColorFrac*0.42 + Math.min(0.07,edgeFrac*0.18),
+      0,0.97
+    );
+    return{
+      material:'Tuiles',
+      confidence,
+      accepted:confidence>=0.82,
+      metrics:{meanV,meanS,warmFrac,terraFrac,brownFrac,darkFrac,midFrac,lightFrac,greenFrac,edgeFrac,margin:tileColorFrac}
+    };
+  }
 
   const scores={
-    'Tuiles': warmFrac*2.8 + meanS*0.45 + edgeFrac*0.30,
-    'Ardoises': darkFrac*1.65 + (1-meanV/255)*0.45 + (1-meanS)*0.20 + edgeFrac*0.18,
-    'Zinc': midFrac*1.35 + lightFrac*0.38 + (1-meanS)*0.32 + (meanV>108&&meanV<210?0.28:0) + edgeFrac*0.08,
-    'Toit-terrasse / autre': lightFrac*1.25 + (1-meanS)*0.22 + (edgeFrac<0.08?0.32:0)
+    'Tuiles': tileColorFrac*3.9 + meanS*0.42 + edgeFrac*0.28,
+    'Ardoises': darkFrac*1.95 + (1-meanV/255)*0.48 + (1-meanS)*0.18 + edgeFrac*0.20,
+    'Zinc': midFrac*1.55 + lightFrac*0.42 + (1-meanS)*0.34 + (meanV>105&&meanV<215?0.26:0) + edgeFrac*0.07,
+    'Toit-terrasse / autre': lightFrac*1.32 + (1-meanS)*0.20 + (edgeFrac<0.075?0.30:0)
   };
 
-  if(greenFrac>0.22){
-    Object.keys(scores).forEach(k=>scores[k]*=0.72);
+  if(greenFrac>0.18){
+    Object.keys(scores).forEach(k=>scores[k]*=0.68);
   }
 
   const ranked=Object.entries(scores).sort((a,b)=>b[1]-a[1]);
   const [best,second]=ranked;
   const margin=best[1]-(second?.[1]||0);
+  const evidence=best[1];
 
-  let evidence=best[1];
   let confidence=clamp(
-    0.42 + margin*0.34 + Math.min(0.20,evidence*0.08),
-    0,0.96
+    0.38 + margin*0.38 + Math.min(0.22,evidence*0.085),
+    0,0.95
   );
 
-  if(best[0]==='Tuiles'&&warmFrac<0.10)confidence*=0.72;
-  if(best[0]==='Ardoises'&&darkFrac<0.28)confidence*=0.78;
-  if(best[0]==='Zinc'&&(midFrac+lightFrac)<0.38)confidence*=0.76;
-  if(best[0]==='Toit-terrasse / autre'&&lightFrac<0.42)confidence*=0.74;
+  if(best[0]==='Tuiles'&&tileColorFrac<0.12)confidence*=0.70;
+  if(best[0]==='Ardoises'&&darkFrac<0.30)confidence*=0.75;
+  if(best[0]==='Zinc'&&(midFrac+lightFrac)<0.40)confidence*=0.74;
+  if(best[0]==='Toit-terrasse / autre'&&lightFrac<0.44)confidence*=0.72;
 
-  const accepted=confidence>=0.72&&margin>=0.18;
+  const accepted=confidence>=0.80&&margin>=0.20&&greenFrac<0.22;
 
   return{
     material:best[0],
     confidence,
     accepted,
-    metrics:{meanV,meanS,warmFrac,darkFrac,midFrac,lightFrac,greenFrac,edgeFrac,margin}
+    metrics:{meanV,meanS,warmFrac,terraFrac,brownFrac,darkFrac,midFrac,lightFrac,greenFrac,edgeFrac,margin}
   };
 }
 
@@ -816,6 +872,19 @@ async function analyzeRoofVisual(building,runId){
     if(runId!==analysisRun)return;
 
     const result=classifyRoofPixels(roof,mask);
+
+    // Croisement prudent avec la BD TOPO : accord = petit renfort ;
+    // désaccord = l'image ne l'emporte que si elle est vraiment convaincante.
+    const ign=currentBuilding?.material&&currentBuilding.material!=='Non confirmé'
+      ?currentBuilding.material:null;
+    if(result.material&&ign){
+      if(sameMaterial(ign,result.material)){
+        result.confidence=clamp(result.confidence+0.06,0,0.97);
+        if(result.confidence>=0.78)result.accepted=true;
+      }else if(result.confidence<0.86){
+        result.accepted=false;
+      }
+    }
 
     // Preview only: highlight the analysed footprint after classification.
     const pctx=roof.getContext('2d');
@@ -1327,7 +1396,10 @@ function generateRoofReport(){
   line('Adresse :',current.label);
   line('Date :',new Date().toLocaleString('fr-FR'));
   line('Identifiant IGN :',currentBuilding.id);
-  line('Hauteur IGN :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
+  line('Hauteur à l’égout (IGN) :',currentBuilding.height?currentBuilding.height.toLocaleString('fr-FR')+' m':'Non renseignée');
+  line('Hauteur au faîtage (IGN) :',Number.isFinite(currentBuilding.ridgeHeight)
+    ?currentBuilding.ridgeHeight.toLocaleString('fr-FR',{maximumFractionDigits:1})+' m'
+    :'Non disponible');
   const manualMeasurement=getManualMeasurement();
   line('Surface automatique IGN :',Math.round(currentBuilding.area).toLocaleString('fr-FR')+' m²');
   line('Surface utilisée :',Math.round(surfaceForCalculations()).toLocaleString('fr-FR')+' m²');
@@ -1405,6 +1477,9 @@ function resetBuilding(){
   document.getElementById('buildingCard').classList.add('hidden');
   document.getElementById('visualMaterial').textContent='En attente…';
   document.getElementById('visualConfidence').textContent='—';
+  document.getElementById('ridgeHeight').textContent='—';
+  document.getElementById('ridgeSource').textContent='—';
+  document.getElementById('ignMaterial').textContent='—';
   document.getElementById('usedArea').textContent='—';
   document.getElementById('areaSource').textContent='Contour automatique IGN';
   measurementMode=false;
@@ -1492,10 +1567,25 @@ async function analyzeBuilding(){
     const arr=(data.features||[]).map(f=>{
       const p=f.properties||{};
 
+      const zMinGround=Number.isFinite(+p.altitude_minimale_sol)?+p.altitude_minimale_sol:null;
+      const zMinRoof=Number.isFinite(+p.altitude_minimale_toit)?+p.altitude_minimale_toit:null;
+      const zMaxRoof=Number.isFinite(+p.altitude_maximale_toit)?+p.altitude_maximale_toit:null;
+      const ridgeHeight=(zMinGround!=null&&zMaxRoof!=null&&zMaxRoof>=zMinGround)
+        ?zMaxRoof-zMinGround:null;
+      const roofRise=(zMinRoof!=null&&zMaxRoof!=null&&zMaxRoof>=zMinRoof)
+        ?zMaxRoof-zMinRoof:null;
+
       return{
         f,
         area:featureArea(f),
         height:+p.hauteur||0,
+        ridgeHeight,
+        roofRise,
+        zMinGround,
+        zMinRoof,
+        zMaxRoof,
+        altPrecision:Number.isFinite(+p.precision_altimetrique)?+p.precision_altimetrique:null,
+        altMethod:p.methode_d_acquisition_altimetrique||'',
         material:normalizeMaterial(p.materiaux_de_la_toiture),
         usage:cleanUsage(p),
         nature:p.nature||'Bâtiment',
@@ -1560,6 +1650,15 @@ async function analyzeBuilding(){
     document.getElementById('buildingAddress').textContent=current.label;
     document.getElementById('height').textContent=
       x.height?x.height.toLocaleString('fr-FR')+' m':'Non renseignée';
+    document.getElementById('ridgeHeight').textContent=
+      Number.isFinite(x.ridgeHeight)
+        ?x.ridgeHeight.toLocaleString('fr-FR',{maximumFractionDigits:1})+' m'
+        :'Non disponible';
+    document.getElementById('ridgeSource').textContent=
+      Number.isFinite(x.ridgeHeight)
+        ?'Z_MAX_TOIT − Z_MIN_SOL'+
+          (Number.isFinite(x.altPrecision)?' · précision source '+x.altPrecision.toLocaleString('fr-FR')+' m':'')
+        :'Altitudes de toit IGN non disponibles pour ce bâtiment';
     currentBuilding=x;
     currentBuilding.matchQuality=quality;
     document.getElementById('usage').textContent=x.usage;
