@@ -137,25 +137,134 @@ function pickAddress(features,q){
   const postcodeMatch=String(q||'').match(/\b\d{5}\b/);
   const wantedPostcode=postcodeMatch?postcodeMatch[0]:null;
 
-  const ranked=list.map(f=>{
+  const exact=list.filter(f=>{
+    const p=f.properties||{};
+    const n=normalizeText(p.housenumber||'');
+    const cp=String(p.postcode||p.zipcode||'');
+    return (!wantedNumber||n===wantedNumber) &&
+           (!wantedPostcode||cp===wantedPostcode);
+  });
+
+  const pool=exact.length?exact:list;
+
+  const ranked=pool.map(f=>{
     const p=f.properties||{};
     const candidateNumber=normalizeText(p.housenumber||'');
+    const candidatePostcode=String(p.postcode||p.zipcode||'');
     let rank=Number(p.score)||0;
 
-    if(wantedNumber){
-      rank+=candidateNumber===wantedNumber?2:-2;
-    }
-    if(wantedPostcode){
-      rank+=String(p.postcode||'')===wantedPostcode?1:-1;
-    }
+    if(wantedNumber&&candidateNumber===wantedNumber)rank+=3;
+    if(wantedPostcode&&candidatePostcode===wantedPostcode)rank+=2;
     if(p.type==='housenumber')rank+=0.5;
 
-    return{f,rank,candidateNumber};
+    return{f,rank,candidateNumber,candidatePostcode};
   }).sort((a,b)=>b.rank-a.rank);
 
   const best=ranked[0];
-  if(wantedNumber&&best.candidateNumber!==wantedNumber)return null;
+  if(!best)return null;
+
+  if(wantedNumber&&best.candidateNumber&&best.candidateNumber!==wantedNumber){
+    return null;
+  }
+  if(wantedPostcode&&best.candidatePostcode&&best.candidatePostcode!==wantedPostcode){
+    return null;
+  }
+
   return best.f;
+}
+
+function completionToFeature(r){
+  if(!r||!Number.isFinite(+r.x)||!Number.isFinite(+r.y))return null;
+
+  const fulltext=String(r.fulltext||'');
+  const m=fulltext.trim().match(/^(\d+\s*(?:bis|ter|quater)?[a-z]?)/i);
+
+  return{
+    type:'Feature',
+    geometry:{type:'Point',coordinates:[+r.x,+r.y]},
+    properties:{
+      label:fulltext||[r.street,r.zipcode,r.city].filter(Boolean).join(' '),
+      housenumber:m?m[1]:'',
+      postcode:String(r.zipcode||''),
+      city:r.city||'',
+      type:'housenumber',
+      score:1
+    }
+  };
+}
+
+async function geocodeExactAddress(q){
+  const postcodeMatch=String(q||'').match(/\b\d{5}\b/);
+  const postcode=postcodeMatch?postcodeMatch[0]:'';
+
+  const urls=[];
+
+  const primary=new URL('https://data.geopf.fr/geocodage/search/');
+  primary.searchParams.set('q',q);
+  primary.searchParams.set('limit','10');
+  primary.searchParams.set('index','address');
+  primary.searchParams.set('autocomplete','0');
+  if(postcode)primary.searchParams.set('postcode',postcode);
+  urls.push(primary.toString());
+
+  const secondary=new URL('https://data.geopf.fr/geocodage/search/');
+  secondary.searchParams.set('q',q.replace(/,/g,' '));
+  secondary.searchParams.set('limit','10');
+  if(postcode)secondary.searchParams.set('postcode',postcode);
+  urls.push(secondary.toString());
+
+  let collected=[];
+
+  for(const url of urls){
+    try{
+      const r=await fetch(url);
+      if(!r.ok)continue;
+      const j=await r.json();
+      if(Array.isArray(j.features))collected.push(...j.features);
+
+      const picked=pickAddress(collected,q);
+      if(picked){
+        const wanted=extractHouseNumber(q);
+        const got=normalizeText(picked.properties?.housenumber||'');
+        if(!wanted||got===wanted)return picked;
+      }
+    }catch(e){}
+  }
+
+  try{
+    const c=new URL('https://data.geopf.fr/geocodage/completion/');
+    c.searchParams.set('text',q);
+    c.searchParams.set('type','StreetAddress');
+    c.searchParams.set('maximumResponses','10');
+    if(postcode)c.searchParams.set('zipcode',postcode);
+
+    const r=await fetch(c);
+    if(r.ok){
+      const j=await r.json();
+      const features=(j.results||[])
+        .map(completionToFeature)
+        .filter(Boolean);
+
+      const picked=pickAddress(features,q);
+      if(picked)return picked;
+    }
+  }catch(e){}
+
+  try{
+    const old=new URL('https://api-adresse.data.gouv.fr/search/');
+    old.searchParams.set('q',q);
+    old.searchParams.set('limit','10');
+    if(postcode)old.searchParams.set('postcode',postcode);
+
+    const r=await fetch(old);
+    if(r.ok){
+      const j=await r.json();
+      const picked=pickAddress(j.features||[],q);
+      if(picked)return picked;
+    }
+  }catch(e){}
+
+  return pickAddress(collected,q);
 }
 
 function technicalBBox(lat,lon,r){
@@ -318,23 +427,10 @@ async function searchAddress(){
   msg('Recherche de l’adresse…');
 
   try{
-    const r=await fetch(
-      'https://data.geopf.fr/geocodage/search/?limit=8&q='+encodeURIComponent(q)
-    );
-
-    if(!r.ok)throw Error('Géocodage '+r.status);
-
-    const j=await r.json();
-
-    if(!j.features?.length){
-      msg('Adresse introuvable.');
-      return;
-    }
-
-    const f=pickAddress(j.features,q);
+    const f=await geocodeExactAddress(q);
 
     if(!f){
-      msg('Adresse exacte non confirmée. Vérifie le numéro, la rue et le code postal.');
+      msg('Adresse introuvable ou non localisable avec assez de précision.');
       return;
     }
 
